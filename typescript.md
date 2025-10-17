@@ -13,7 +13,9 @@ This guide provides a comprehensive reference for setting up new TypeScript proj
 7. [Git Attributes](#git-attributes)
 8. [Package.json Scripts](#packagejson-scripts)
 9. [Installation Steps](#installation-steps)
-10. [A Word on "Prototypes" and Strict Settings](#a-word-on-prototypes-and-strict-settings)
+10. [Code Smart: Readability Principles](#code-smart-readability-principles)
+11. [A Word on "Prototypes" and Strict Settings](#a-word-on-prototypes-and-strict-settings)
+12. [References](#references)
 
 ---
 
@@ -304,6 +306,68 @@ module.exports = [
 npm install --save-dev eslint @typescript-eslint/parser @typescript-eslint/eslint-plugin \
   eslint-plugin-import eslint-plugin-unused-imports eslint-config-prettier
 ```
+
+### When Long Functions Are Actually Better
+
+Sometimes a 100-line function that tells a complete story is more maintainable than splitting it into 10 smaller functions. Consider keeping a function long when:
+
+- **The function tells a linear story**: Each step follows naturally from the previous one
+- **Breaking it up would require passing many parameters**: Creating helper functions that need 5+ parameters is often worse than one longer function
+- **The logic is cohesive**: All the code relates to a single, clear purpose
+- **Breaking it up adds indirection**: If you'd need to constantly jump between functions to understand the flow
+
+**Example - Good long function:**
+
+```typescript
+interface CheckoutResult {
+    success: boolean;
+    orderId?: string;
+    total?: number;
+    error?: string;
+}
+
+function processCheckout(order: Order, payment: Payment): CheckoutResult {
+    // Validate order
+    if (order.items.length === 0) {
+        return { success: false, error: 'Empty order' };
+    }
+
+    // Calculate totals
+    const subtotal = order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const tax = subtotal * order.taxRate;
+    const shipping = calculateShipping(order.address, order.items);
+    const total = subtotal + tax + shipping;
+
+    // Validate payment amount
+    if (payment.amount < total) {
+        return { success: false, error: 'Insufficient payment' };
+    }
+
+    // Process payment
+    const paymentResult = paymentGateway.charge(payment, total);
+    if (paymentResult.success === false) {
+        return { success: false, error: paymentResult.error };
+    }
+
+    // Update inventory
+    for (const item of order.items) {
+        inventory.decrement(item.id, item.quantity);
+    }
+
+    // Create order record
+    const orderId = database.createOrder(order, total, paymentResult.transactionId);
+
+    // Send confirmation email
+    email.sendOrderConfirmation(order.customer.email, orderId, total);
+
+    // Return success
+    return { success: true, orderId, total };
+}
+```
+
+This 35-line function is clear and easy to follow. Breaking it into tiny functions like `validateOrder()`, `calculateTotals()`, `processPayment()`, etc., might actually make it harder to understand the complete checkout flow.
+
+**The rule of thumb**: If you can easily understand what the function does by reading it top-to-bottom without scrolling too much, it's fine. Only split when complexity genuinely hurts comprehension.
 
 ---
 
@@ -710,6 +774,181 @@ By following this guide, your TypeScript projects will have a solid foundation f
 
 ---
 
+## Code Smart: Readability Principles
+
+Beyond linters and type checkers, good code requires human judgment. These principles will make your code more maintainable and easier to understand.
+
+### Be a Never-Nester
+
+Deep nesting makes code exponentially harder to read and reason about. Each level of nesting adds cognitive load.
+
+**Bad - Deep Nesting:**
+
+```typescript
+function processOrder(order: Order): string {
+    if (order !== null && order !== undefined) {
+        if (order.items.length > 0) {
+            if (order.customer !== null && order.customer !== undefined) {
+                if (order.customer.isActive) {
+                    if (order.total > 0) {
+                        return `Processing order for ${order.customer.name}`;
+                    } else {
+                        return 'Order total must be positive';
+                    }
+                } else {
+                    return 'Customer is inactive';
+                }
+            } else {
+                return 'Customer is required';
+            }
+        } else {
+            return 'Order has no items';
+        }
+    } else {
+        return 'Order is required';
+    }
+}
+```
+
+**Good - Early Returns (Never-Nester):**
+
+```typescript
+function processOrder(order: Order): string {
+    if (order === null || order === undefined) {
+        return 'Order is required';
+    }
+
+    if (order.items.length === 0) {
+        return 'Order has no items';
+    }
+
+    if (order.customer === null || order.customer === undefined) {
+        return 'Customer is required';
+    }
+
+    if (!order.customer.isActive) {
+        return 'Customer is inactive';
+    }
+
+    if (order.total <= 0) {
+        return 'Order total must be positive';
+    }
+
+    return `Processing order for ${order.customer.name}`;
+}
+```
+
+**Key techniques for avoiding nesting:**
+
+1. **Early returns**: Guard clauses at the top of functions
+2. **Extract functions**: Break complex conditions into well-named functions
+3. **Invert conditions**: Return early on error cases, continue with happy path
+4. **Use optional chaining and nullish coalescing**: Flatten nested property access
+
+```typescript
+// Instead of nested checks
+if (user !== null && user !== undefined) {
+    if (user.settings !== null && user.settings !== undefined) {
+        const theme = user.settings.theme;
+    }
+}
+
+// Use optional chaining
+const theme = user?.settings?.theme ?? 'default';
+```
+
+### Don't Use Abbreviations - Characters Are (Almost) Free
+
+Abbreviations save a few keystrokes but cost hundreds of hours in confusion over a project's lifetime. Modern editors have autocomplete - take advantage of it.
+
+**Bad - Cryptic Abbreviations:**
+
+```typescript
+function calcUsrDisc(usr: Usr, amt: number): number {
+    const lvl = usr.memLvl;
+    const discPct = lvl === 'prem' ? 0.2 : 0.1;
+    return amt * discPct;
+}
+
+const btn = document.querySelector('.btn');
+const msg = 'Hello';
+const idx = arr.findIndex(el => el.id === tgtId);
+```
+
+**Good - Clear Names:**
+
+```typescript
+function calculateUserDiscount(user: User, amount: number): number {
+    const membershipLevel = user.membershipLevel;
+    const discountPercentage = membershipLevel === 'premium' ? 0.2 : 0.1;
+    return amount * discountPercentage;
+}
+
+const button = document.querySelector('.button');
+const message = 'Hello';
+const index = array.findIndex(element => element.id === targetId);
+```
+
+**Common abbreviations to avoid:**
+
+- `usr` → `user`
+- `btn` → `button`
+- `msg` → `message`
+- `idx` → `index`
+- `arr` → `array`
+- `el` → `element`
+- `err` → `error`
+- `ctx` → `context`
+- `cfg` → `config`
+- `tmp` → `temporary`
+- `prev` → `previous`
+- `curr` → `current`
+
+**Acceptable abbreviations** (widely understood in context):
+
+- `id` - universally understood identifier
+- `url` - standard acronym
+- `api` - standard acronym
+- `html`, `css`, `json` - standard formats
+- `max`, `min` - mathematical conventions
+- `i`, `j`, `k` - loop counters in simple loops (but prefer descriptive names in complex loops)
+
+**Example of when to use full names even in loops:**
+
+```typescript
+// ❌ Bad - unclear what we're iterating over
+for (let i = 0; i < usrs.length; i++) {
+    for (let j = 0; j < usrs[i].ords.length; j++) {
+        // What is i? What is j?
+    }
+}
+
+// ✅ Good - crystal clear
+for (const user of users) {
+    for (const order of user.orders) {
+        // Immediately clear what we're working with
+    }
+}
+```
+
+### Why This Matters
+
+1. **Onboarding**: New team members can understand code faster
+2. **Code reviews**: Reviewers spend less time deciphering abbreviations
+3. **Debugging**: Clear names make stack traces and error messages meaningful
+4. **Future you**: You'll forget what `calcUsrDisc` means in 6 months
+5. **Searchability**: Full words are easier to search for across a codebase
+
+### The Cost of Characters vs. The Cost of Confusion
+
+- Typing 10 extra characters: **2 seconds**
+- Figuring out what `usrMgr` means: **30 seconds**
+- Debugging because you confused `msgCnt` (message count) with `msgCnt` (message content): **30 minutes**
+
+**Characters are almost free. Confusion is expensive.**
+
+---
+
 ## A Word on "Prototypes" and Strict Settings
 
 **Warning**: A common mistake is to start a project with relaxed settings for "prototyping" or "moving fast", planning to add strictness later.
@@ -755,3 +994,12 @@ If you truly need to relax some rules temporarily, do it strategically:
 ```
 
 **Remember**: Every rule you disable is a category of bugs you're allowing into your codebase. The pain of strict checks is temporary; the pain of production bugs is permanent.
+
+---
+
+## References
+
+> "The wise man learns from everything and everyone, the ordinary man learns from his experience, and the fool knows everything better." - Socrates
+
+- The [CodeAesthetic](https://www.youtube.com/@CodeAesthetic) YouTube channel
+- ["Clean" Code, Horrible Performance](https://www.youtube.com/watch?v=tD5NrevFtbU) by [Molly Rocket](https://www.youtube.com/@MollyRocket)
