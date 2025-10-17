@@ -13,6 +13,7 @@ This guide provides a comprehensive reference for setting up new TypeScript proj
 7. [Git Attributes](#git-attributes)
 8. [Package.json Scripts](#packagejson-scripts)
 9. [Installation Steps](#installation-steps)
+10. [A Word on "Prototypes" and Strict Settings](#a-word-on-prototypes-and-strict-settings)
 
 ---
 
@@ -137,6 +138,8 @@ npm install --save-dev prettier
 
 ESLint catches bugs and enforces code quality standards.
 
+> **Note**: These rules are strict by design. They may feel restrictive initially, but they prevent entire categories of bugs and enforce consistency. Resist the urge to disable rules when starting a new project - it's much harder to enable them later when you have a large codebase. See "A Word on Prototypes and Strict Settings" at the end of this document.
+
 ### `eslint.config.js` (ESLint 9+ Flat Config)
 
 ```javascript
@@ -215,7 +218,10 @@ module.exports = [
 
             // Core quality rules
             'curly': ['error', 'all'],
-            'eqeqeq': ['error', 'always', { null: 'ignore' }],
+            // Require === and !== always, no exceptions
+            // To allow == null and != null for concise null/undefined checks, use:
+            // 'eqeqeq': ['error', 'always', { null: 'ignore' }],
+            'eqeqeq': ['error', 'always'],
             'no-var': 'error',
             'prefer-const': 'error',
             'prefer-template': 'error',
@@ -225,6 +231,11 @@ module.exports = [
             '@typescript-eslint/no-unused-vars': 'off',
             '@typescript-eslint/naming-convention': [
                 'error',
+                // Constants: Use UPPER_CASE for hardcoded values (primitives, arrays, objects)
+                // Examples: const MAX_RETRIES = 3, const VALID_CODES = [1, 2, 3]
+                //           const ERROR_MESSAGES = { notFound: 'Not found' }
+                // Use camelCase for: functions, class instances, computed/dynamic values
+                // Examples: const getUserData = () => {...}, const config = loadConfig()
                 {
                     selector: 'variable',
                     modifiers: ['const'],
@@ -299,6 +310,8 @@ npm install --save-dev eslint @typescript-eslint/parser @typescript-eslint/eslin
 ## TypeScript Configuration
 
 TypeScript's compiler enforces type safety and catches errors at compile time.
+
+> **Note**: This configuration is intentionally strict. While you might be tempted to relax these settings for "prototyping", remember that prototypes almost always become production code. It's far easier to start strict than to add strictness later. See the section "A Word on Prototypes and Strict Settings" at the end of this document for more details.
 
 ### `tsconfig.json` (Strict Configuration)
 
@@ -694,3 +707,51 @@ This setup provides:
 - **Developer Experience**: VS Code integration with recommended extensions
 
 By following this guide, your TypeScript projects will have a solid foundation for maintainability, consistency, and quality.
+
+---
+
+## A Word on "Prototypes" and Strict Settings
+
+**Warning**: A common mistake is to start a project with relaxed settings for "prototyping" or "moving fast", planning to add strictness later.
+
+### Why This Approach Fails
+
+1. **Prototypes become production**: What starts as a quick prototype often becomes the production codebase when it works well enough. Nobody wants to stop and refactor working code.
+
+2. **Retrofitting is painful**: Adding strict TypeScript checks to existing code can generate hundreds or thousands of errors. Teams often give up or use `// @ts-ignore` everywhere, defeating the purpose.
+
+3. **Technical debt compounds**: Every day you write code without strict checks, you're creating more technical debt that becomes harder to fix.
+
+4. **Team resistance**: Once a team gets used to loose checks, there's psychological resistance to "making the build harder" by enabling strict mode.
+
+### The Better Approach
+
+**Start strict from day one**, even for prototypes:
+
+- It's easier to write strict code from the beginning than to fix it later
+- You catch bugs immediately instead of discovering them in production
+- The "slowdown" from strict checks is minimal compared to the time saved debugging
+- Your prototype is already production-ready if it succeeds
+
+### If You Must Relax Settings
+
+If you truly need to relax some rules temporarily, do it strategically:
+
+1. **Create a `tsconfig.prototype.json`** that extends the strict config but disables specific checks
+2. **Set a deadline** (e.g., "before first production deploy") to migrate to full strict mode
+3. **Keep Prettier and basic ESLint** - formatting and imports should always be enforced
+4. **Never disable**: `noImplicitAny`, `strictNullChecks`, `noUnusedLocals` - these catch too many real bugs
+
+### Rules You Might Consider Relaxing (with caution)
+
+```typescript
+// In tsconfig.json - consider keeping these enabled even for prototypes:
+"exactOptionalPropertyTypes": false,  // Can cause friction with libraries
+"noPropertyAccessFromIndexSignature": false,  // Adds verbosity
+
+// In eslint.config.js - consider relaxing:
+"@typescript-eslint/explicit-function-return-type": "off",  // Reduces boilerplate
+"no-console": "warn",  // Allow console for debugging, but warn
+```
+
+**Remember**: Every rule you disable is a category of bugs you're allowing into your codebase. The pain of strict checks is temporary; the pain of production bugs is permanent.
