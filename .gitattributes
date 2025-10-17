@@ -1,0 +1,5 @@
+# Set default behavior to automatically normalize line endings to LF
+* text=auto eol=lf
+
+# Explicitly declare text files you want to always be normalized and converted to LF on checkout
+*.md text eol=lf
