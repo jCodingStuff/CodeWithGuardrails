@@ -8,13 +8,15 @@ This guide provides a comprehensive reference for setting up new Python projects
 2. [VS Code Configuration](#vs-code-configuration)
 3. [Ruff (Formatter and Linter)](#ruff-formatter-and-linter)
 4. [mypy (Type Checking)](#mypy-type-checking)
-5. [Pre-commit Hooks](#pre-commit-hooks)
-6. [Git Attributes](#git-attributes)
-7. [Project Configuration (pyproject.toml)](#project-configuration-pyprojecttoml)
-8. [Installation Steps](#installation-steps)
-9. [Code Smart: Readability Principles](#code-smart-readability-principles)
-10. [A Word on "Prototypes" and Strict Settings](#a-word-on-prototypes-and-strict-settings)
-11. [References](#references)
+5. [Pydantic (Runtime Validation)](#pydantic-runtime-validation)
+6. [Returns (Functional Error Handling) - Optional](#returns-functional-error-handling---optional)
+7. [Pre-commit Hooks](#pre-commit-hooks)
+8. [Git Attributes](#git-attributes)
+9. [Project Configuration (pyproject.toml)](#project-configuration-pyprojecttoml)
+10. [Installation Steps](#installation-steps)
+11. [Code Smart: Readability Principles](#code-smart-readability-principles)
+12. [A Word on "Prototypes" and Strict Settings](#a-word-on-prototypes-and-strict-settings)
+13. [References](#references)
 
 ---
 
@@ -368,6 +370,840 @@ pip install mypy
 
 ---
 
+## Pydantic (Runtime Validation)
+
+Pydantic provides runtime data validation and settings management using Python type annotations. While mypy catches type errors at development time, Pydantic validates data at runtime - especially valuable at system boundaries like API requests, configuration files, and external data sources.
+
+> **Why Pydantic?** Static type checking (mypy) ensures your code is internally consistent, but it can't validate data that arrives at runtime from users, APIs, or config files. Pydantic bridges this gap by providing automatic validation, parsing, and serialization based on type hints.
+
+### The Progression: Types → Validation → Pydantic
+
+Let's see how Pydantic improves upon basic type hints and dataclasses:
+
+**Level 1 - Basic Type Hints (Static checking only):**
+
+```python
+def create_user(name: str, age: int, email: str) -> dict[str, str | int]:
+    """No runtime validation - type hints are just documentation."""
+    return {"name": name, "age": age, "email": email}
+
+# This will pass at runtime, even though types are wrong!
+user = create_user(123, "not a number", "invalid-email")  # mypy error, but runs
+```
+
+**Level 2 - Dataclasses (Structure, but no validation):**
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class User:
+    name: str
+    age: int
+    email: str
+
+# Better structure, but still no runtime validation
+user = User(name=123, age="not a number", email="invalid-email")  # Runs anyway!
+```
+
+**Level 3 - Pydantic (Structure + Runtime Validation):**
+
+```python
+from pydantic import BaseModel, EmailStr, Field
+
+class User(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    age: int = Field(ge=0, le=150)
+    email: EmailStr
+
+# Now this raises a ValidationError at runtime!
+try:
+    user = User(name=123, age="not a number", email="invalid-email")
+except ValidationError as e:
+    print(e)
+    # Shows exactly what's wrong:
+    # - name: Input should be a valid string
+    # - age: Input should be a valid integer
+    # - email: value is not a valid email address
+```
+
+### Pydantic Configuration in `pyproject.toml`
+
+```toml
+[tool.pydantic]
+# Use V2 strict mode for maximum type safety
+# This aligns with our strict mypy configuration
+strict = true
+
+# Validate assignment after model creation
+validate_assignment = true
+
+# Validate default values
+validate_default = true
+
+# Use enum values instead of enum members in serialization
+use_enum_values = true
+```
+
+### Real-World Use Cases
+
+#### 1. API Request/Response Models
+
+```python
+from datetime import datetime
+from pydantic import BaseModel, Field, EmailStr, HttpUrl
+from typing import Literal
+
+class CreateUserRequest(BaseModel):
+    """Validates incoming API requests."""
+    username: str = Field(min_length=3, max_length=30, pattern="^[a-zA-Z0-9_]+$")
+    email: EmailStr
+    age: int = Field(ge=13, le=120, description="User must be 13-120 years old")
+    website: HttpUrl | None = None
+    role: Literal["user", "admin", "moderator"] = "user"
+
+class UserResponse(BaseModel):
+    """Validates outgoing API responses."""
+    id: int
+    username: str
+    email: EmailStr
+    created_at: datetime
+    role: str
+
+    class Config:
+        # Allow ORM objects (like SQLAlchemy models) to be converted
+        from_attributes = True
+
+# FastAPI automatically validates using Pydantic models
+# from fastapi import FastAPI
+# app = FastAPI()
+#
+# @app.post("/users", response_model=UserResponse)
+# def create_user(user: CreateUserRequest) -> UserResponse:
+#     # user is guaranteed to be valid!
+#     # FastAPI returns 422 Unprocessable Entity if validation fails
+#     pass
+```
+
+#### 2. Configuration Files
+
+```python
+from pathlib import Path
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings
+
+class DatabaseConfig(BaseModel):
+    """Database configuration with validation."""
+    host: str = "localhost"
+    port: int = Field(ge=1, le=65535, default=5432)
+    username: str
+    password: str = Field(min_length=8)
+    database: str
+
+    @property
+    def connection_string(self) -> str:
+        """Generate connection string from validated config."""
+        return f"postgresql://{self.username}:{self.password}@{self.host}:{self.port}/{self.database}"
+
+class AppSettings(BaseSettings):
+    """Application settings loaded from environment variables or .env file."""
+    app_name: str = "My Application"
+    debug: bool = False
+    database: DatabaseConfig
+    api_key: str = Field(min_length=32)
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    max_connections: int = Field(ge=1, le=1000, default=100)
+
+    class Config:
+        # Automatically load from .env file
+        env_file = ".env"
+        env_nested_delimiter = "__"  # DATABASE__HOST in .env → database.host
+
+# Usage
+settings = AppSettings()  # Raises ValidationError if config is invalid
+print(settings.database.connection_string)
+```
+
+#### 3. Data Validation with Custom Validators
+
+```python
+from pydantic import BaseModel, field_validator, model_validator
+
+class PasswordReset(BaseModel):
+    """Password reset with custom validation."""
+    password: str = Field(min_length=12)
+    password_confirm: str
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        """Ensure password meets strength requirements."""
+        if not any(c.isupper() for c in value):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.islower() for c in value):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not any(c.isdigit() for c in value):
+            raise ValueError("Password must contain at least one digit")
+        if not any(c in "!@#$%^&*" for c in value):
+            raise ValueError("Password must contain at least one special character")
+        return value
+
+    @model_validator(mode="after")
+    def validate_passwords_match(self) -> "PasswordReset":
+        """Ensure password and confirmation match."""
+        if self.password != self.password_confirm:
+            raise ValueError("Passwords do not match")
+        return self
+
+# Usage
+try:
+    reset = PasswordReset(password="weak", password_confirm="weak")
+except ValidationError as e:
+    print(e)  # Shows all validation errors
+```
+
+#### 4. Parsing and Coercion
+
+```python
+from datetime import datetime
+from pydantic import BaseModel
+
+class Event(BaseModel):
+    """Pydantic automatically parses and coerces types."""
+    name: str
+    timestamp: datetime
+    attendee_count: int
+    is_public: bool
+
+# Pydantic automatically converts compatible types
+event = Event(
+    name="Python Meetup",
+    timestamp="2024-01-15T19:00:00",  # String → datetime
+    attendee_count="42",  # String → int
+    is_public="yes"  # String → bool (recognizes yes/true/1)
+)
+
+print(event.timestamp)  # datetime object
+print(event.attendee_count)  # int: 42
+print(event.is_public)  # bool: True
+
+# Serialize back to dict or JSON
+print(event.model_dump())  # Python dict
+print(event.model_dump_json())  # JSON string
+```
+
+### Integration with mypy
+
+Pydantic works seamlessly with mypy's strict mode. Install the mypy plugin:
+
+```toml
+# In pyproject.toml
+[tool.mypy]
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+```
+
+This enables:
+- Full type inference for Pydantic models
+- Proper typing for model fields
+- Detection of invalid field assignments
+
+### When to Use Pydantic vs. Dataclasses
+
+**Use Pydantic when:**
+- ✅ Validating external data (APIs, user input, config files)
+- ✅ Parsing data from JSON, environment variables, or other formats
+- ✅ You need automatic type coercion (e.g., string → int)
+- ✅ Building APIs (especially with FastAPI)
+- ✅ Complex validation logic is required
+
+**Use dataclasses when:**
+- ✅ Data is already validated and internal to your system
+- ✅ You want zero runtime overhead
+- ✅ Simple data containers without validation needs
+- ✅ Working with frozen/immutable data structures
+
+**Use both:**
+```python
+from dataclasses import dataclass
+from pydantic import BaseModel
+
+# Pydantic at the boundary (validates external data)
+class UserCreateRequest(BaseModel):
+    username: str
+    email: EmailStr
+    age: int = Field(ge=13)
+
+# Dataclass internally (already validated)
+@dataclass(frozen=True)
+class User:
+    id: int
+    username: str
+    email: str
+    age: int
+
+def create_user(request: UserCreateRequest) -> User:
+    """Accept validated Pydantic model, return internal dataclass."""
+    # request is guaranteed to be valid
+    user_id = database.insert(request.model_dump())
+    return User(
+        id=user_id,
+        username=request.username,
+        email=request.email,
+        age=request.age
+    )
+```
+
+### Pydantic Best Practices
+
+1. **Validate at boundaries**: Use Pydantic where data enters your system (API endpoints, config loading, file parsing)
+
+2. **Use descriptive Field constraints**: Make validation rules explicit
+   ```python
+   age: int = Field(ge=0, le=150, description="Age in years")
+   ```
+
+3. **Leverage built-in validators**: Use `EmailStr`, `HttpUrl`, `FilePath`, etc. instead of string
+   ```python
+   from pydantic import BaseModel, EmailStr, HttpUrl, FilePath
+
+   class Config(BaseModel):
+       email: EmailStr  # Validates email format
+       website: HttpUrl  # Validates URL format
+       config_file: FilePath  # Validates file exists
+   ```
+
+4. **Use Literal for enums**: Better than string validation for fixed choices
+   ```python
+   status: Literal["pending", "approved", "rejected"]
+   ```
+
+5. **Model composition**: Break large models into smaller, reusable components
+   ```python
+   class Address(BaseModel):
+       street: str
+       city: str
+       zip_code: str = Field(pattern=r"^\d{5}$")
+
+   class User(BaseModel):
+       name: str
+       address: Address  # Nested validation
+   ```
+
+6. **Use model_validator for cross-field validation**: When one field depends on another
+   ```python
+   @model_validator(mode="after")
+   def check_dates(self) -> "Booking":
+       if self.end_date < self.start_date:
+           raise ValueError("end_date must be after start_date")
+       return self
+   ```
+
+### Common Pitfalls to Avoid
+
+❌ **Don't use Pydantic for performance-critical internal data structures**
+```python
+# Bad - unnecessary overhead in tight loops
+for i in range(1_000_000):
+    point = Point(x=i, y=i * 2)  # Validates on every iteration
+```
+
+✅ **Use dataclasses or plain dicts for internal data**
+```python
+# Good - validate once at boundary, use fast structures internally
+@dataclass
+class Point:
+    x: int
+    y: int
+
+def process_points(raw_data: list[dict]) -> list[Point]:
+    # Validate once with Pydantic
+    validated = [PointModel(**p) for p in raw_data]
+    # Convert to fast dataclasses for processing
+    return [Point(x=p.x, y=p.y) for p in validated]
+```
+
+### Installation
+
+```bash
+pip install pydantic[email]  # Includes email validation
+```
+
+For configuration management:
+```bash
+pip install pydantic-settings
+```
+
+### Further Reading
+
+- [Pydantic Documentation](https://docs.pydantic.dev/)
+- [Pydantic with FastAPI](https://fastapi.tiangolo.com/)
+- [pydantic-settings for configuration](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)
+
+---
+
+## Returns (Functional Error Handling) - Optional
+
+The `returns` library brings functional programming patterns to Python, making error handling explicit, composable, and fully type-safe. While Python traditionally uses exceptions for error handling, `returns` offers Result types that make failure paths visible in function signatures and enforced by the type checker.
+
+> **Why Returns?** Exceptions are invisible in function signatures and easy to forget. Result types make errors explicit, composable, and enforced by mypy. This leads to more robust code where error handling is verified at compile time. For teams that appreciate functional programming, this brings the elegance of languages like Rust and Haskell to Python.
+
+**Note**: This is an optional, advanced pattern best suited for teams that value functional programming or need extremely rigorous error handling. For traditional Python codebases, idiomatic exception handling is perfectly acceptable.
+
+### The Problem with Exceptions
+
+**Traditional exception-based code:**
+
+```python
+def divide(a: int, b: int) -> float:
+    """Can raise ZeroDivisionError, but signature doesn't show it."""
+    return a / b
+
+def get_user(user_id: int) -> dict[str, str]:
+    """Can raise KeyError, but not visible in signature."""
+    return database[user_id]
+
+# Easy to forget error handling - no compile-time warning
+result = divide(10, 0)  # Crashes at runtime!
+user = get_user(999)    # Crashes at runtime!
+```
+
+**Issues with exceptions:**
+
+1. **Invisible in signatures**: No way to know which functions can fail
+2. **Easy to forget**: Nothing forces you to handle errors
+3. **Break composition**: Can't easily chain operations that might fail
+4. **Unclear control flow**: Exceptions can bubble up from anywhere
+
+### Result Types: Making Errors Explicit
+
+```python
+from returns.result import Result, Success, Failure
+
+def divide(a: int, b: int) -> Result[float, str]:
+    """Returns Success(result) or Failure(error). Visible in signature!"""
+    if b == 0:
+        return Failure("Division by zero")
+    return Success(a / b)
+
+def get_user(user_id: int) -> Result[dict[str, str], str]:
+    """Returns Success(user) or Failure(error). Impossible to ignore!"""
+    user = database.get(user_id)
+    if user is None:
+        return Failure(f"User {user_id} not found")
+    return Success(user)
+
+# mypy forces you to handle both cases
+result = divide(10, 2)
+match result:
+    case Success(value):
+        print(f"Result: {value}")
+    case Failure(error):
+        print(f"Error: {error}")
+
+# ❌ mypy error if you forget to handle Failure!
+value = divide(10, 0)  # Type error - Result is not float
+```
+
+### Railway-Oriented Programming: Chaining Operations
+
+The real power of Result types is composing operations that might fail:
+
+```python
+from returns.result import Result, Success, Failure
+from returns.pipeline import flow
+from returns.pointfree import bind
+
+# Each function returns Result[T, str]
+def parse_int(value: str) -> Result[int, str]:
+    """Parse string to int."""
+    try:
+        return Success(int(value))
+    except ValueError:
+        return Failure(f"Invalid integer: {value}")
+
+def validate_positive(value: int) -> Result[int, str]:
+    """Ensure value is positive."""
+    if value <= 0:
+        return Failure(f"Must be positive, got {value}")
+    return Success(value)
+
+def divide_by_two(value: int) -> Result[float, str]:
+    """Divide by 2."""
+    return Success(value / 2.0)
+
+# Chain all operations - stops at first failure
+result: Result[float, str] = flow(
+    "42",
+    parse_int,
+    bind(validate_positive),
+    bind(divide_by_two),
+)
+
+match result:
+    case Success(value):
+        print(f"Final value: {value}")  # 21.0
+    case Failure(error):
+        print(f"Pipeline failed: {error}")
+
+# If any step fails, the rest are skipped
+result_error = flow(
+    "-5",
+    parse_int,              # Success(-5)
+    bind(validate_positive), # Failure("Must be positive, got -5")
+    bind(divide_by_two),     # Skipped!
+)
+# Result: Failure("Must be positive, got -5")
+```
+
+Compare to exception-based code:
+
+```python
+# Exception version - much more verbose and error-prone
+try:
+    value = int("42")
+    if value <= 0:
+        raise ValueError(f"Must be positive, got {value}")
+    result = value / 2.0
+    print(f"Final value: {result}")
+except ValueError as e:
+    print(f"Pipeline failed: {e}")
+```
+
+### Safe Decorator: Converting Exceptions to Results
+
+The `@safe` decorator automatically converts exceptions into Failure:
+
+```python
+from returns.result import safe
+
+@safe
+def parse_json(text: str) -> dict:
+    """Automatically catches JSONDecodeError and returns Result."""
+    import json
+    return json.loads(text)
+
+# Type: Result[dict, Exception]
+result1 = parse_json('{"name": "John"}')  # Success({"name": "John"})
+result2 = parse_json('invalid json')       # Failure(JSONDecodeError(...))
+
+# Chain with other operations
+user_name = (
+    parse_json('{"name": "John", "age": 30}')
+    .map(lambda data: data.get("name"))
+    .value_or("Unknown")
+)
+print(user_name)  # "John"
+```
+
+### Maybe: Type-Safe Optional Values
+
+The `Maybe` type is perfect for operations that might return nothing (better than `None`):
+
+```python
+from returns.maybe import Maybe, Some, Nothing
+
+def find_user_by_email(email: str) -> Maybe[dict[str, str]]:
+    """Returns Some(user) if found, Nothing otherwise."""
+    user = database.find_one({"email": email})
+    return Some(user) if user else Nothing
+
+def get_user_name(user: dict[str, str]) -> Maybe[str]:
+    """Extract name from user."""
+    name = user.get("name")
+    return Some(name) if name else Nothing
+
+# Chain Maybe operations - stops at first Nothing
+result: Maybe[str] = (
+    find_user_by_email("john@example.com")
+    .bind(get_user_name)
+)
+
+# Unwrap with default
+name = result.value_or("Anonymous User")
+print(name)
+
+# Compare to traditional None-based code
+user = find_user_by_email_old("john@example.com")
+if user is not None:
+    name = user.get("name")
+    if name is not None:
+        print(name)
+    else:
+        print("Anonymous User")
+else:
+    print("Anonymous User")
+```
+
+### IO and IOResult: Marking Impure Operations
+
+`IO` types mark functions that have side effects (file I/O, database, network), separating pure and impure code:
+
+```python
+from returns.io import IO, IOSuccess, IOFailure, IOResult, impure_safe
+
+# Pure function - no side effects, always returns same output for same input
+def calculate_total(items: list[dict]) -> float:
+    """Pure function - no IO."""
+    return sum(item["price"] * item["quantity"] for item in items)
+
+# Impure function - has side effects (reads file)
+@impure_safe
+def read_config(path: str) -> IOResult[dict, Exception]:
+    """Reads file - marked as impure with IO type."""
+    import json
+    with open(path) as f:
+        return json.load(f)
+
+# Type system now knows this function does IO!
+config: IOResult[dict, Exception] = read_config("/etc/config.json")
+
+# IO types are explicit about side effects
+def process_order(order_data: dict) -> IOResult[str, str]:
+    """Process order with database side effects."""
+    total = calculate_total(order_data["items"])  # Pure - no IO
+
+    # Impure - database operation
+    try:
+        order_id = database.insert_order(order_data, total)
+        return IOSuccess(f"Order {order_id} created")
+    except Exception as e:
+        return IOFailure(str(e))
+
+# Benefits:
+# 1. Easy to identify which functions have side effects
+# 2. Can test pure functions without mocking
+# 3. Can defer IO operations (lazy evaluation)
+# 4. Clear separation of business logic (pure) from infrastructure (impure)
+```
+
+### Practical Example: User Registration Pipeline
+
+Putting it all together:
+
+```python
+from dataclasses import dataclass
+from returns.result import Result, Success, Failure, safe
+from returns.pipeline import flow
+from returns.pointfree import bind
+
+@dataclass(frozen=True)
+class User:
+    """Domain model."""
+    username: str
+    email: str
+    age: int
+
+# Validation functions (pure, no side effects)
+def validate_username(username: str) -> Result[str, str]:
+    """Validate username format."""
+    if len(username) < 3:
+        return Failure("Username must be at least 3 characters")
+    if not username.isalnum():
+        return Failure("Username must be alphanumeric")
+    return Success(username)
+
+def validate_email(email: str) -> Result[str, str]:
+    """Validate email format."""
+    if "@" not in email or "." not in email.split("@")[1]:
+        return Failure("Invalid email format")
+    return Success(email)
+
+def validate_age(age: int) -> Result[int, str]:
+    """Validate age range."""
+    if age < 13:
+        return Failure("Must be at least 13 years old")
+    if age > 120:
+        return Failure("Invalid age")
+    return Success(age)
+
+def create_user_object(
+    username: str,
+    email: str,
+    age: int,
+) -> Result[User, str]:
+    """Create validated user object."""
+    return Success(User(username=username, email=email, age=age))
+
+# Impure function (database side effect)
+@safe
+def save_to_database(user: User) -> User:
+    """Save user to database (might raise exception)."""
+    user_id = database.insert({"username": user.username, "email": user.email, "age": user.age})
+    return user
+
+# Compose the entire pipeline
+def register_user(
+    username: str,
+    email: str,
+    age: int,
+) -> Result[User, str | Exception]:
+    """Register user with full validation and error handling."""
+    username_result = validate_username(username)
+    email_result = validate_email(email)
+    age_result = validate_age(age)
+
+    # Collect validation results
+    if isinstance(username_result, Failure):
+        return username_result
+    if isinstance(email_result, Failure):
+        return email_result
+    if isinstance(age_result, Failure):
+        return age_result
+
+    # All validations passed - create and save user
+    return (
+        create_user_object(
+            username_result.unwrap(),
+            email_result.unwrap(),
+            age_result.unwrap(),
+        )
+        .bind(save_to_database)
+    )
+
+# Usage
+result = register_user("john_doe", "john@example.com", 25)
+match result:
+    case Success(user):
+        print(f"User {user.username} registered successfully!")
+    case Failure(error):
+        print(f"Registration failed: {error}")
+
+# All possible errors are handled at compile time by mypy!
+```
+
+### Integration with mypy
+
+Enable the returns plugin for full type safety:
+
+```toml
+# In pyproject.toml
+[tool.mypy]
+strict = true
+plugins = ["returns.contrib.mypy.returns_plugin"]
+```
+
+Benefits:
+
+- **Complete type inference** for Result, Maybe, and IO types
+- **Enforcement of error handling** - mypy errors if you don't handle failures
+- **Exhaustiveness checking** with pattern matching
+- **No runtime type errors** from unhandled Results
+
+### When to Use Returns
+
+**Use Returns when:**
+- ✅ Building highly reliable systems where all errors must be handled
+- ✅ Working with teams that appreciate functional programming patterns
+- ✅ Building data pipelines where operations must be chained safely
+- ✅ Need explicit error handling enforced by the type system
+- ✅ Working with financial, medical, or other critical domains
+- ✅ Want to eliminate "forgot to handle error" bugs
+
+**Use traditional exceptions when:**
+- ✅ Working with teams unfamiliar with functional patterns
+- ✅ Dealing with truly exceptional conditions (not normal control flow)
+- ✅ Simple scripts or one-off utilities
+- ✅ Need to interoperate with exception-based libraries
+
+**Hybrid approach** (recommended for most teams):
+
+```python
+from returns.result import Result, Success, safe
+
+# Business logic: Use Result types
+def validate_transfer(from_account: int, to_account: int, amount: float) -> Result[None, str]:
+    """Business logic with explicit error handling."""
+    if amount <= 0:
+        return Failure("Amount must be positive")
+    if from_account == to_account:
+        return Failure("Cannot transfer to same account")
+    return Success(None)
+
+# Infrastructure: Use @safe to convert exceptions to Results
+@safe
+def execute_transfer(from_account: int, to_account: int, amount: float) -> None:
+    """Database operation - exceptions automatically converted to Result."""
+    database.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", (amount, from_account))
+    database.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", (amount, to_account))
+
+# Compose them together
+def transfer_money(from_account: int, to_account: int, amount: float) -> Result[str, str | Exception]:
+    """Full transfer with validation and error handling."""
+    return (
+        validate_transfer(from_account, to_account, amount)
+        .bind(lambda _: execute_transfer(from_account, to_account, amount))
+        .map(lambda _: f"Transferred ${amount} successfully")
+    )
+```
+
+### Common Operations
+
+```python
+from returns.result import Result, Success, Failure
+
+# map: Transform success value (doesn't change failure)
+result: Result[int, str] = Success(5)
+doubled: Result[int, str] = result.map(lambda x: x * 2)  # Success(10)
+
+# bind: Chain operations that return Result (flatMap in other languages)
+result: Result[int, str] = Success(10)
+chained: Result[float, str] = result.bind(lambda x: divide(x, 2))  # Success(5.0)
+
+# value_or: Unwrap with default value
+result: Result[int, str] = Failure("error")
+value: int = result.value_or(0)  # 0
+
+# lash: Recover from failure (error handling)
+result: Result[int, str] = Failure("not found")
+recovered: Result[int, str] = result.lash(lambda error: Success(0))  # Success(0)
+
+# alt: Provide alternative Result on failure
+result: Result[int, str] = Failure("error")
+alternative: Result[int, str] = result.alt(Success(42))  # Success(42)
+```
+
+### Installation
+
+```bash
+pip install returns
+```
+
+### Advanced Features (Beyond This Guide)
+
+The `returns` library offers much more for teams ready to go deeper:
+
+- **Future and FutureResult**: For async/await support and asynchronous error handling
+- **RequiresContext**: For typed dependency injection (alternative to global state)
+- **do-notation**: For imperative-style syntax with functional benefits
+- **Custom containers**: Write your own monadic types with full type safety
+
+See the [returns documentation](https://returns.readthedocs.io/) for these advanced patterns.
+
+### Why This Makes Python Better
+
+Python is an excellent language, but exceptions have long been a weakness for type safety and composition. Result types bring the rigor and elegance of languages like Rust, Haskell, and Scala to Python while maintaining Pythonic readability.
+
+The combination of:
+- **Strict mypy** → catches type errors at development time
+- **Pydantic** → validates external data at runtime
+- **Returns** → makes error handling explicit and type-safe
+
+...creates a development experience that rivals statically-typed languages while keeping Python's expressiveness and productivity. For teams willing to embrace these patterns, Python becomes a genuinely world-class language for building reliable systems.
+
+### Further Reading
+
+- [Returns Documentation](https://returns.readthedocs.io/) - Full documentation with all containers
+- [Railway Oriented Programming](https://fsharpforfunandprofit.com/rop/) - The conceptual foundation (F# article, concepts apply to all languages)
+- [returns GitHub](https://github.com/dry-python/returns) - Source code and examples
+- [Functional Programming in Python](https://returns.readthedocs.io/en/latest/pages/philosophy.html) - Philosophy behind the library
+
+---
+
 ## Pre-commit Hooks
 
 Pre-commit runs linting, formatting, and type checking before commits to ensure code quality.
@@ -402,7 +1238,7 @@ repos:
     rev: v1.9.0
     hooks:
       - id: mypy
-        additional_dependencies: []  # Add your type stub packages here
+        additional_dependencies: [pydantic]  # Add your type stub packages here
         args: [--strict]
 ```
 
@@ -536,6 +1372,8 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
     "pre-commit>=3.6.0",
+    "pydantic[email]>=2.0.0",
+    "pydantic-settings>=2.0.0",
 ]
 
 [project.urls]
@@ -585,6 +1423,7 @@ line-ending = "lf"
 [tool.mypy]
 strict = true
 python_version = "3.11"
+plugins = ["pydantic.mypy"]
 disallow_any_unimported = true
 disallow_any_generics = true
 disallow_subclassing_any = true
@@ -607,6 +1446,11 @@ show_error_codes = true
 pretty = true
 check_untyped_defs = true
 warn_unused_configs = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
 
 # pytest configuration
 [tool.pytest.ini_options]
@@ -1061,7 +1905,8 @@ This setup provides:
 
 - **Consistent Code Style**: EditorConfig + Ruff formatter
 - **Code Quality**: Ruff linter with comprehensive rule sets
-- **Type Safety**: Strict mypy configuration catching type errors
+- **Type Safety**: Strict mypy configuration catching type errors at development time
+- **Runtime Validation**: Pydantic for validating data at system boundaries
 - **Automated Quality Checks**: Pre-commit hooks for all tools
 - **Cross-platform Consistency**: Git attributes for line endings and file handling
 - **Security**: Proper handling of binary files and sensitive data

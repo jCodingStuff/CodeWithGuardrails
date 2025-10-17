@@ -9,13 +9,14 @@ This guide provides a comprehensive reference for setting up new TypeScript proj
 3. [Prettier](#prettier)
 4. [ESLint](#eslint)
 5. [TypeScript Configuration](#typescript-configuration)
-6. [Git Hooks with Husky](#git-hooks-with-husky)
-7. [Git Attributes](#git-attributes)
-8. [Package.json Scripts](#packagejson-scripts)
-9. [Installation Steps](#installation-steps)
-10. [Code Smart: Readability Principles](#code-smart-readability-principles)
-11. [A Word on "Prototypes" and Strict Settings](#a-word-on-prototypes-and-strict-settings)
-12. [References](#references)
+6. [Zod (Runtime Validation)](#zod-runtime-validation)
+7. [Git Hooks with Husky](#git-hooks-with-husky)
+8. [Git Attributes](#git-attributes)
+9. [Package.json Scripts](#packagejson-scripts)
+10. [Installation Steps](#installation-steps)
+11. [Code Smart: Readability Principles](#code-smart-readability-principles)
+12. [A Word on "Prototypes" and Strict Settings](#a-word-on-prototypes-and-strict-settings)
+13. [References](#references)
 
 ---
 
@@ -463,6 +464,539 @@ npm install --save-dev typescript @types/node
 
 ---
 
+## Zod (Runtime Validation)
+
+Zod provides runtime data validation and type-safe schema declaration using TypeScript. While TypeScript catches type errors at compile time, Zod validates data at runtime - especially valuable at system boundaries like API requests, configuration files, and external data sources.
+
+> **Why Zod?** TypeScript's type system is erased at runtime, so it can't validate data that arrives from users, APIs, or config files. Zod bridges this gap by providing runtime validation with full TypeScript inference, giving you both compile-time and runtime type safety.
+
+### The Progression: Types → Validation → Zod
+
+Let's see how Zod improves upon basic TypeScript types and interfaces:
+
+**Level 1 - Basic TypeScript Types (Compile-time only):**
+
+```typescript
+interface User {
+    name: string;
+    age: number;
+    email: string;
+}
+
+function createUser(data: unknown): User {
+    // No runtime validation - TypeScript can't help here!
+    return data as User; // Dangerous cast
+}
+
+// This compiles but crashes at runtime:
+const user = createUser({ name: 123, age: 'not a number', email: 'invalid' });
+```
+
+**Level 2 - Manual Validation (Verbose and error-prone):**
+
+```typescript
+function createUser(data: unknown): User {
+    if (typeof data !== 'object' || data === null) {
+        throw new Error('Invalid data');
+    }
+
+    const obj = data as Record<string, unknown>;
+
+    if (typeof obj.name !== 'string') {
+        throw new Error('Name must be a string');
+    }
+    if (typeof obj.age !== 'number') {
+        throw new Error('Age must be a number');
+    }
+    if (typeof obj.email !== 'string') {
+        throw new Error('Email must be a string');
+    }
+
+    return obj as User; // Still using unsafe cast
+}
+```
+
+**Level 3 - Zod (Schema + Runtime Validation + Type Inference):**
+
+```typescript
+import { z } from 'zod';
+
+// Define schema with validation
+const UserSchema = z.object({
+    name: z.string().min(1).max(100),
+    age: z.number().int().min(0).max(150),
+    email: z.string().email(),
+});
+
+// TypeScript type automatically inferred from schema
+type User = z.infer<typeof UserSchema>;
+
+function createUser(data: unknown): User {
+    // Validates and returns typed data, or throws detailed error
+    return UserSchema.parse(data);
+}
+
+// Now this throws a clear validation error:
+try {
+    const user = createUser({ name: 123, age: 'not a number', email: 'invalid' });
+} catch (error) {
+    if (error instanceof z.ZodError) {
+        console.log(error.errors);
+        // Shows exactly what's wrong:
+        // - name: Expected string, received number
+        // - age: Expected number, received string
+        // - email: Invalid email
+    }
+}
+```
+
+### Real-World Use Cases
+
+#### 1. API Request/Response Validation
+
+```typescript
+import { z } from 'zod';
+
+// Request schema
+const CreateUserRequestSchema = z.object({
+    username: z.string().min(3).max(30).regex(/^[a-zA-Z0-9_]+$/),
+    email: z.string().email(),
+    age: z.number().int().min(13).max(120),
+    website: z.string().url().optional(),
+    role: z.enum(['user', 'admin', 'moderator']).default('user'),
+});
+
+type CreateUserRequest = z.infer<typeof CreateUserRequestSchema>;
+
+// Response schema
+const UserResponseSchema = z.object({
+    id: z.number(),
+    username: z.string(),
+    email: z.string().email(),
+    createdAt: z.date(),
+    role: z.string(),
+});
+
+type UserResponse = z.infer<typeof UserResponseSchema>;
+
+// Express route example
+app.post('/users', (req, res) => {
+    try {
+        // Validate request body
+        const userData = CreateUserRequestSchema.parse(req.body);
+
+        // userData is now properly typed and validated
+        const user = database.createUser(userData);
+
+        // Validate response before sending
+        const response = UserResponseSchema.parse(user);
+        res.json(response);
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            // Return 400 with validation errors
+            res.status(400).json({ errors: error.errors });
+            return;
+        }
+        throw error;
+    }
+});
+```
+
+#### 2. Configuration Files with Environment Variables
+
+```typescript
+import { z } from 'zod';
+
+const DatabaseConfigSchema = z.object({
+    host: z.string().default('localhost'),
+    port: z.number().int().min(1).max(65535).default(5432),
+    username: z.string(),
+    password: z.string().min(8),
+    database: z.string(),
+});
+
+type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
+
+const AppConfigSchema = z.object({
+    appName: z.string().default('My Application'),
+    debug: z.boolean().default(false),
+    database: DatabaseConfigSchema,
+    apiKey: z.string().min(32),
+    logLevel: z.enum(['DEBUG', 'INFO', 'WARNING', 'ERROR']).default('INFO'),
+    maxConnections: z.number().int().min(1).max(1000).default(100),
+});
+
+type AppConfig = z.infer<typeof AppConfigSchema>;
+
+// Load and validate configuration
+function loadConfig(): AppConfig {
+    const rawConfig = {
+        database: {
+            host: process.env.DB_HOST,
+            port: process.env.DB_PORT ? parseInt(process.env.DB_PORT) : undefined,
+            username: process.env.DB_USERNAME,
+            password: process.env.DB_PASSWORD,
+            database: process.env.DB_DATABASE,
+        },
+        apiKey: process.env.API_KEY,
+        debug: process.env.DEBUG === 'true',
+    };
+
+    // Validates and applies defaults
+    return AppConfigSchema.parse(rawConfig);
+}
+
+// Usage - throws clear error if config is invalid
+const config = loadConfig();
+```
+
+#### 3. Data Transformation and Coercion
+
+```typescript
+import { z } from 'zod';
+
+// Zod can coerce types from strings (useful for URL params, env vars)
+const EventSchema = z.object({
+    name: z.string(),
+    timestamp: z.coerce.date(), // Coerces string to Date
+    attendeeCount: z.coerce.number().int(), // Coerces string to number
+    isPublic: z.boolean(),
+});
+
+type Event = z.infer<typeof EventSchema>;
+
+// Parse URL query parameters
+const event = EventSchema.parse({
+    name: 'TypeScript Meetup',
+    timestamp: '2024-01-15T19:00:00Z', // String → Date
+    attendeeCount: '42', // String → number
+    isPublic: true,
+});
+
+console.log(event.timestamp instanceof Date); // true
+console.log(typeof event.attendeeCount); // number
+```
+
+#### 4. Complex Validation with Refinements
+
+```typescript
+import { z } from 'zod';
+
+const PasswordResetSchema = z
+    .object({
+        password: z
+            .string()
+            .min(12, 'Password must be at least 12 characters')
+            .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+            .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+            .regex(/[0-9]/, 'Password must contain at least one digit')
+            .regex(/[!@#$%^&*]/, 'Password must contain at least one special character'),
+        passwordConfirm: z.string(),
+    })
+    .refine((data) => data.password === data.passwordConfirm, {
+        message: 'Passwords do not match',
+        path: ['passwordConfirm'], // Error will point to passwordConfirm field
+    });
+
+type PasswordReset = z.infer<typeof PasswordResetSchema>;
+
+// Usage
+try {
+    const reset = PasswordResetSchema.parse({
+        password: 'weak',
+        passwordConfirm: 'weak',
+    });
+} catch (error) {
+    if (error instanceof z.ZodError) {
+        console.log(error.errors); // Shows all validation errors
+    }
+}
+```
+
+#### 5. Optional and Nullable Fields
+
+```typescript
+import { z } from 'zod';
+
+const ProfileSchema = z.object({
+    // Required field
+    userId: z.number(),
+
+    // Optional field (may be undefined)
+    bio: z.string().optional(),
+
+    // Nullable field (may be null)
+    avatar: z.string().url().nullable(),
+
+    // Optional AND nullable (may be undefined or null)
+    phoneNumber: z.string().nullable().optional(),
+
+    // With default value
+    theme: z.enum(['light', 'dark']).default('light'),
+
+    // With fallback value (catches validation errors too)
+    notifications: z.boolean().catch(true),
+});
+
+type Profile = z.infer<typeof ProfileSchema>;
+```
+
+### Integration with TypeScript
+
+Zod's biggest strength is its seamless TypeScript integration:
+
+```typescript
+import { z } from 'zod';
+
+// Define schema once
+const UserSchema = z.object({
+    id: z.number(),
+    name: z.string(),
+    email: z.string().email(),
+    role: z.enum(['user', 'admin']),
+    metadata: z.record(z.string()), // Record<string, string>
+    tags: z.array(z.string()), // string[]
+    createdAt: z.date(),
+});
+
+// TypeScript type is automatically inferred!
+type User = z.infer<typeof UserSchema>;
+// Equivalent to:
+// interface User {
+//     id: number;
+//     name: string;
+//     email: string;
+//     role: 'user' | 'admin';
+//     metadata: Record<string, string>;
+//     tags: string[];
+//     createdAt: Date;
+// }
+
+// The schema also serves as runtime validator
+function validateUser(data: unknown): User {
+    return UserSchema.parse(data); // Returns User or throws
+}
+```
+
+### When to Use Zod vs. TypeScript Types
+
+**Use Zod when:**
+- ✅ Validating external data (APIs, user input, config files)
+- ✅ Parsing data from JSON, environment variables, or URL params
+- ✅ You need runtime type checking and transformation
+- ✅ Building APIs (REST, GraphQL, tRPC)
+- ✅ Complex validation logic is required
+
+**Use TypeScript types alone when:**
+- ✅ Data is already validated and internal to your system
+- ✅ Working with compile-time-only types (generics, mapped types)
+- ✅ Maximum performance is critical (Zod has some overhead)
+
+**Use both:**
+```typescript
+import { z } from 'zod';
+
+// Zod schema for runtime validation at boundaries
+const UserCreateRequestSchema = z.object({
+    username: z.string().min(3),
+    email: z.string().email(),
+    age: z.number().int().min(13),
+});
+
+type UserCreateRequest = z.infer<typeof UserCreateRequestSchema>;
+
+// Internal domain model (TypeScript only)
+interface User {
+    id: number;
+    username: string;
+    email: string;
+    age: number;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+function createUser(request: unknown): User {
+    // Validate at boundary with Zod
+    const validatedRequest = UserCreateRequestSchema.parse(request);
+
+    // Work with validated data internally
+    const userId = database.insert(validatedRequest);
+
+    return {
+        id: userId,
+        username: validatedRequest.username,
+        email: validatedRequest.email,
+        age: validatedRequest.age,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+    };
+}
+```
+
+### Zod Best Practices
+
+1. **Validate at boundaries**: Use Zod where data enters your system (API endpoints, config loading, file parsing)
+
+2. **Use specific validators**: Take advantage of Zod's built-in validators
+   ```typescript
+   z.string().email() // Email validation
+   z.string().url() // URL validation
+   z.string().uuid() // UUID validation
+   z.string().regex(/pattern/) // Custom regex
+   z.number().int() // Integer validation
+   z.number().positive() // Positive numbers
+   z.date().min(new Date('2020-01-01')) // Date constraints
+   ```
+
+3. **Infer types from schemas**: Always use `z.infer<typeof Schema>` instead of defining types separately
+   ```typescript
+   // ✅ Good - single source of truth
+   const UserSchema = z.object({ name: z.string() });
+   type User = z.infer<typeof UserSchema>;
+
+   // ❌ Bad - duplication, can get out of sync
+   const UserSchema = z.object({ name: z.string() });
+   interface User { name: string }
+   ```
+
+4. **Use enums for fixed choices**: Better than string unions
+   ```typescript
+   const StatusSchema = z.enum(['pending', 'approved', 'rejected']);
+   type Status = z.infer<typeof StatusSchema>; // 'pending' | 'approved' | 'rejected'
+   ```
+
+5. **Schema composition**: Break large schemas into smaller, reusable components
+   ```typescript
+   const AddressSchema = z.object({
+       street: z.string(),
+       city: z.string(),
+       zipCode: z.string().regex(/^\d{5}$/),
+   });
+
+   const UserSchema = z.object({
+       name: z.string(),
+       address: AddressSchema, // Nested validation
+   });
+   ```
+
+6. **Use `safeParse` when errors are expected**: Returns result object instead of throwing
+   ```typescript
+   const result = UserSchema.safeParse(data);
+
+   if (result.success === false) {
+       // Handle validation errors
+       console.log(result.error.errors);
+       return;
+   }
+
+   // Use validated data
+   const user = result.data;
+   ```
+
+### Common Pitfalls to Avoid
+
+❌ **Don't use Zod for performance-critical internal operations**
+```typescript
+// Bad - unnecessary overhead in tight loops
+for (let i = 0; i < 1_000_000; i++) {
+    const point = PointSchema.parse({ x: i, y: i * 2 }); // Validates on every iteration
+}
+```
+
+✅ **Validate once at boundaries, use native types internally**
+```typescript
+// Good - validate once, use fast native types
+interface Point {
+    x: number;
+    y: number;
+}
+
+function processPoints(rawData: unknown[]): Point[] {
+    // Validate once with Zod
+    const validatedData = z.array(PointSchema).parse(rawData);
+
+    // Work with native types internally
+    return validatedData.map((point) => ({
+        x: point.x * 2,
+        y: point.y * 2,
+    }));
+}
+```
+
+❌ **Don't use Zod for TypeScript-only type transformations**
+```typescript
+// Bad - Zod can't help with mapped types
+const Schema = z.object({ /* ... */ }); // Can't represent Partial<T>, Pick<T>, etc.
+```
+
+✅ **Use TypeScript utilities for compile-time transformations**
+```typescript
+// Good - use TypeScript for type-level operations
+interface User {
+    id: number;
+    name: string;
+    email: string;
+}
+
+type PartialUser = Partial<User>; // Compile-time only
+type UserUpdate = Omit<User, 'id'>; // Compile-time only
+```
+
+### Installation
+
+```bash
+npm install zod
+```
+
+### Integration with Popular Frameworks
+
+**tRPC (End-to-end typesafe APIs):**
+```typescript
+import { z } from 'zod';
+import { initTRPC } from '@trpc/server';
+
+const t = initTRPC.create();
+
+export const appRouter = t.router({
+    createUser: t.procedure
+        .input(z.object({ name: z.string(), email: z.string().email() }))
+        .mutation(({ input }) => {
+            // input is fully typed and validated
+            return database.createUser(input);
+        }),
+});
+```
+
+**React Hook Form:**
+```typescript
+import { z } from 'zod';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useForm } from 'react-hook-form';
+
+const FormSchema = z.object({
+    username: z.string().min(3),
+    email: z.string().email(),
+});
+
+type FormData = z.infer<typeof FormSchema>;
+
+function MyForm(): JSX.Element {
+    const { register, handleSubmit } = useForm<FormData>({
+        resolver: zodResolver(FormSchema),
+    });
+
+    return <form onSubmit={handleSubmit((data) => console.log(data))}>{/* ... */}</form>;
+}
+```
+
+### Further Reading
+
+- [Zod Documentation](https://zod.dev/)
+- [Zod GitHub Repository](https://github.com/colinhacks/zod)
+- [tRPC with Zod](https://trpc.io/docs/server/validators#zod)
+
+---
+
 ## Git Hooks with Husky
 
 Husky runs linting and formatting checks before commits to ensure code quality.
@@ -764,7 +1298,8 @@ This setup provides:
 
 - **Consistent Code Style**: EditorConfig + Prettier
 - **Code Quality**: ESLint with strict TypeScript rules
-- **Type Safety**: Strict TypeScript compiler options with advanced checks
+- **Type Safety**: Strict TypeScript compiler options catching errors at compile time
+- **Runtime Validation**: Zod for validating data at system boundaries
 - **Automated Quality Checks**: Husky pre-commit hooks
 - **Cross-platform Consistency**: Git attributes for line endings and file handling
 - **Security**: Proper handling of binary files and sensitive data
