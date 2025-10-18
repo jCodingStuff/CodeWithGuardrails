@@ -1247,6 +1247,29 @@ git add .
 git commit -m "Initial project setup with TypeScript, ESLint, Prettier, and Husky"
 ```
 
+### 10. Keeping Dependencies Updated
+
+Regularly update your dependencies to get bug fixes, security patches, and new features:
+
+```bash
+# Check for outdated packages
+npm outdated
+
+# Update all dependencies to latest versions (within semver constraints)
+npm update
+
+# For major version updates, use npm-check-updates
+npx npm-check-updates -u
+npm install
+```
+
+**Best practices:**
+- Update dependencies at least monthly
+- Review changelogs before updating major versions
+- Run your full test suite after updates
+- Use `npm audit` to check for security vulnerabilities
+- Consider using Dependabot or Renovate for automated dependency updates
+
 ---
 
 ## Additional Recommendations

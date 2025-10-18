@@ -1596,6 +1596,37 @@ git add .
 git commit -m "Initial project setup with Ruff, mypy, and pre-commit"
 ```
 
+### 10. Keeping Dependencies Updated
+
+Regularly update your dependencies to get bug fixes, security patches, and new features:
+
+```bash
+# Check for outdated packages
+pip list --outdated
+
+# Update a specific package
+pip install --upgrade package_name
+
+# Update all packages (be cautious with this)
+pip install --upgrade -r requirements.txt
+
+# Or if using pyproject.toml with dev dependencies
+pip install --upgrade -e ".[dev]"
+
+# Use pip-audit to check for security vulnerabilities
+pip install pip-audit
+pip-audit
+```
+
+**Best practices:**
+- Update dependencies at least monthly
+- Review changelogs before updating major versions
+- Run your full test suite after updates
+- Pin dependencies in production deployments
+- Use tools like `pip-audit` or `safety` to scan for vulnerabilities
+- Consider using Dependabot or Renovate for automated dependency updates
+- Keep your Python version updated to get security fixes
+
 ---
 
 ## Code Smart: Readability Principles
