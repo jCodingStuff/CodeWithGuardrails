@@ -266,7 +266,10 @@ module.exports = [
                 },
             ],
             '@typescript-eslint/no-explicit-any': 'error',
-            '@typescript-eslint/no-floating-promises': 'error',
+            // Note: When using Result types (see "Error Handling with Discriminated Unions"),
+            // you may want to disable no-floating-promises since AsyncResult<T, E> patterns
+            // handle errors in the Result type rather than via promise rejection
+            '@typescript-eslint/no-floating-promises': 'off',
             '@typescript-eslint/await-thenable': 'error',
             '@typescript-eslint/no-misused-promises': 'error',
             '@typescript-eslint/consistent-type-imports': 'error',
