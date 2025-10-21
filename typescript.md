@@ -1569,6 +1569,200 @@ if (result.success) {
 // All possible errors are handled at compile time by TypeScript!
 ```
 
+### Sample `result.ts` file
+
+```typescript
+/**
+ * Result type for handling operations that can fail without throwing exceptions.
+ * Inspired by Rust's Result<T, E> type.
+ *
+ * Usage:
+ *   const result = ok(42);
+ *   if (result.isOk) {
+ *     console.log(result.value); // TypeScript knows this is safe
+ *   } else {
+ *     console.error(result.error);
+ *   }
+ *
+ *   // Or use pattern matching
+ *   match(result, {
+ *     ok: (value) => console.log(value),
+ *     err: (error) => console.error(error)
+ *   });
+ */
+
+export type OkType<T> = {
+    readonly isOk: true;
+    readonly value: T;
+};
+
+export type ErrType<E> = {
+    readonly isOk: false;
+    readonly error: E;
+};
+
+export type Result<T, E> = OkType<T> | ErrType<E>;
+
+/**
+ * Create a successful Result
+ */
+export function ok<T>(value: T): Result<T, never> {
+    return { isOk: true, value };
+}
+
+/**
+ * Create a failed Result
+ */
+export function err<E>(error: E): Result<never, E> {
+    return { isOk: false, error };
+}
+
+/**
+ * Transform the value inside a Result if it's Ok, otherwise pass through the error
+ */
+export function map<T, U, E>(result: Result<T, E>, fn: (value: T) => U): Result<U, E> {
+    return result.isOk ? ok(fn(result.value)) : result;
+}
+
+/**
+ * Transform the error inside a Result if it's Err, otherwise pass through the value
+ */
+export function mapErr<T, E, F>(result: Result<T, E>, fn: (error: E) => F): Result<T, F> {
+    return result.isOk ? result : err(fn(result.error));
+}
+
+/**
+ * Transform the value inside a Result if it's Ok, where the transform function also returns a Result.
+ * Also known as flatMap or bind.
+ */
+export function andThen<T, U, E>(
+    result: Result<T, E>,
+    fn: (value: T) => Result<U, E>,
+): Result<U, E> {
+    return result.isOk ? fn(result.value) : result;
+}
+
+/**
+ * Async version of andThen for chaining async operations
+ */
+export async function andThenAsync<T, U, E>(
+    result: Result<T, E>,
+    fn: (value: T) => Promise<Result<U, E>>,
+): Promise<Result<U, E>> {
+    return result.isOk ? await fn(result.value) : result;
+}
+
+/**
+ * Pattern match on a Result, executing one of two functions based on success/failure
+ */
+export function match<T, E, U>(
+    result: Result<T, E>,
+    patterns: {
+        ok: (value: T) => U;
+        err: (error: E) => U;
+    },
+): U {
+    return result.isOk ? patterns.ok(result.value) : patterns.err(result.error);
+}
+
+/**
+ * Unwrap a Result, returning the value if Ok or throwing if Err.
+ * Throws the raw error if it is an instance of Error, otherwise wraps it.
+ */
+export function unwrap<T, E>(result: Result<T, E>): T {
+    if (result.isOk) return result.value;
+    const e = result.error;
+    if (e instanceof Error) throw e;
+    throw new Error(`Unwrapped Err: ${JSON.stringify(e)}`);
+}
+
+/**
+ * Unwrap a Result, returning the value if Ok or the provided default if Err
+ */
+export function unwrapOr<T, E>(result: Result<T, E>, defaultValue: T): T {
+    return result.isOk ? result.value : defaultValue;
+}
+
+/**
+ * Unwrap a Result, returning the value if Ok or computing a default from the error if Err
+ */
+export function unwrapOrElse<T, E>(result: Result<T, E>, fn: (error: E) => T): T {
+    return result.isOk ? result.value : fn(result.error);
+}
+
+/**
+ * Wrap a function that might throw into a Result
+ */
+export function tryCatch<T, E = Error>(fn: () => T): Result<T, E> {
+    try {
+        return ok(fn());
+    } catch (error) {
+        return err(error as E);
+    }
+}
+
+/**
+ * Async version of tryCatch
+ */
+export async function tryCatchAsync<T, E = Error>(fn: () => Promise<T>): Promise<Result<T, E>> {
+    try {
+        const value = await fn();
+        return ok(value);
+    } catch (error) {
+        return err(error as E);
+    }
+}
+
+/**
+ * Combine multiple Results into a single Result containing an array of values.
+ * If any Result is Err, returns the first Err encountered.
+ */
+export function collect<T, E>(results: Array<Result<T, E>>): Result<T[], E> {
+    const values: T[] = [];
+    for (const result of results) {
+        if (!result.isOk) return err(result.error);
+        values.push(result.value);
+    }
+    return ok(values);
+}
+
+/**
+ * Convert a nullable value to a Result.
+ */
+export function fromNullable<T, E>(value: T | null | undefined, error: E): Result<T, E> {
+    return value != null ? ok(value) : err(error);
+}
+
+/**
+ * Convert a Result into a Promise, resolving if Ok, rejecting if Err.
+ */
+export function toPromise<T, E>(result: Result<T, E>): Promise<T> {
+    return result.isOk ? Promise.resolve(result.value) : Promise.reject(result.error);
+}
+
+/**
+ * Execute a side effect if the Result is Ok, returning the original Result.
+ */
+export function inspect<T, E>(result: Result<T, E>, fn: (value: T) => void): Result<T, E> {
+    if (result.isOk) fn(result.value);
+    return result;
+}
+
+/**
+ * Execute a side effect if the Result is Err, returning the original Result.
+ */
+export function inspectErr<T, E>(result: Result<T, E>, fn: (error: E) => void): Result<T, E> {
+    if (!result.isOk) fn(result.error);
+    return result;
+}
+
+/**
+ * Aliases for convenience
+ */
+export const flatMap = andThen;
+export const mapError = mapErr;
+```
+
 ### Integration with TypeScript's Strict Mode
 
 The strict TypeScript configuration (already in our tsconfig.json) enables full type narrowing benefits:
