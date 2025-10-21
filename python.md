@@ -9,7 +9,7 @@ This guide provides a comprehensive reference for setting up new Python projects
 3. [Ruff (Formatter and Linter)](#ruff-formatter-and-linter)
 4. [mypy (Type Checking)](#mypy-type-checking)
 5. [Pydantic (Runtime Validation)](#pydantic-runtime-validation)
-6. [Returns (Functional Error Handling) - Optional](#returns-functional-error-handling---optional)
+6. [Error Handling with Dataclasses and Pattern Matching](#error-handling-with-dataclasses-and-pattern-matching)
 7. [Pre-commit Hooks](#pre-commit-hooks)
 8. [Git Attributes](#git-attributes)
 9. [Project Configuration (pyproject.toml)](#project-configuration-pyprojecttoml)
@@ -746,13 +746,11 @@ pip install pydantic-settings
 
 ---
 
-## Returns (Functional Error Handling) - Optional
+## Error Handling with Dataclasses and Pattern Matching
 
-The `returns` library brings functional programming patterns to Python, making error handling explicit, composable, and fully type-safe. While Python traditionally uses exceptions for error handling, `returns` offers Result types that make failure paths visible in function signatures and enforced by the type checker.
+Python 3.10+ provides powerful built-in features for explicit error handling through dataclasses, union types, and pattern matching. These native features make error handling type-safe and composable without external dependencies.
 
-> **Why Returns?** Exceptions are invisible in function signatures and easy to forget. Result types make errors explicit, composable, and enforced by mypy. This leads to more robust code where error handling is verified at compile time. For teams that appreciate functional programming, this brings the elegance of languages like Rust and Haskell to Python.
-
-**Note**: This is an optional, advanced pattern best suited for teams that value functional programming or need extremely rigorous error handling. For traditional Python codebases, idiomatic exception handling is perfectly acceptable.
+> **Why dataclasses and pattern matching?** Exceptions are invisible in function signatures and easy to forget. Using dataclasses with union types makes errors explicit and enforced by mypy. Pattern matching (Python 3.10+) provides elegant syntax for handling different cases. This leads to more robust code where error handling is verified by static type checking, using only native Python features.
 
 ### The Problem with Exceptions
 
@@ -779,25 +777,44 @@ user = get_user(999)    # Crashes at runtime!
 3. **Break composition**: Can't easily chain operations that might fail
 4. **Unclear control flow**: Exceptions can bubble up from anywhere
 
-### Result Types: Making Errors Explicit
+### Result Types with Dataclasses
+
+Use dataclasses and union types to make errors explicit in function signatures:
 
 ```python
-from returns.result import Result, Success, Failure
+from dataclasses import dataclass
+from typing import Generic, TypeVar
+
+T = TypeVar('T')
+E = TypeVar('E')
+
+@dataclass
+class Success(Generic[T]):
+    """Represents a successful result."""
+    value: T
+
+@dataclass
+class Failure(Generic[E]):
+    """Represents a failed result."""
+    error: E
+
+# Type alias for Result
+Result = Success[T] | Failure[E]
 
 def divide(a: int, b: int) -> Result[float, str]:
-    """Returns Success(result) or Failure(error). Visible in signature!"""
+    """Returns Success or Failure. Visible in signature!"""
     if b == 0:
         return Failure("Division by zero")
     return Success(a / b)
 
 def get_user(user_id: int) -> Result[dict[str, str], str]:
-    """Returns Success(user) or Failure(error). Impossible to ignore!"""
+    """Returns Success or Failure. Impossible to ignore!"""
     user = database.get(user_id)
     if user is None:
         return Failure(f"User {user_id} not found")
     return Success(user)
 
-# mypy forces you to handle both cases
+# Pattern matching (Python 3.10+) forces you to handle both cases
 result = divide(10, 2)
 match result:
     case Success(value):
@@ -806,17 +823,48 @@ match result:
         print(f"Error: {error}")
 
 # ❌ mypy error if you forget to handle Failure!
-value = divide(10, 0)  # Type error - Result is not float
+# value: float = divide(10, 0).value  # Type error - Failure has no value attribute
 ```
 
-### Railway-Oriented Programming: Chaining Operations
+### Chaining Operations with Helper Functions
 
-The real power of Result types is composing operations that might fail:
+Compose operations that might fail using simple helper functions:
 
 ```python
-from returns.result import Result, Success, Failure
-from returns.pipeline import flow
-from returns.pointfree import bind
+from dataclasses import dataclass
+from typing import Callable, Generic, TypeVar
+
+T = TypeVar('T')
+U = TypeVar('U')
+E = TypeVar('E')
+
+@dataclass
+class Success(Generic[T]):
+    value: T
+
+@dataclass
+class Failure(Generic[E]):
+    error: E
+
+Result = Success[T] | Failure[E]
+
+# Helper to chain Result-returning operations
+def and_then(result: Result[T, E], fn: Callable[[T], Result[U, E]]) -> Result[U, E]:
+    """Apply fn if result is Success, otherwise propagate Failure."""
+    match result:
+        case Success(value):
+            return fn(value)
+        case Failure(error):
+            return Failure(error)
+
+# Helper to transform success values
+def map_result(result: Result[T, E], fn: Callable[[T], U]) -> Result[U, E]:
+    """Transform the value if result is Success."""
+    match result:
+        case Success(value):
+            return Success(fn(value))
+        case Failure(error):
+            return Failure(error)
 
 # Each function returns Result[T, str]
 def parse_int(value: str) -> Result[int, str]:
@@ -832,16 +880,10 @@ def validate_positive(value: int) -> Result[int, str]:
         return Failure(f"Must be positive, got {value}")
     return Success(value)
 
-def divide_by_two(value: int) -> Result[float, str]:
-    """Divide by 2."""
-    return Success(value / 2.0)
-
 # Chain all operations - stops at first failure
-result: Result[float, str] = flow(
-    "42",
-    parse_int,
-    bind(validate_positive),
-    bind(divide_by_two),
+result = and_then(
+    and_then(parse_int("42"), validate_positive),
+    lambda v: Success(v / 2.0)
 )
 
 match result:
@@ -851,35 +893,32 @@ match result:
         print(f"Pipeline failed: {error}")
 
 # If any step fails, the rest are skipped
-result_error = flow(
-    "-5",
-    parse_int,              # Success(-5)
-    bind(validate_positive), # Failure("Must be positive, got -5")
-    bind(divide_by_two),     # Skipped!
+result_error = and_then(
+    and_then(parse_int("-5"), validate_positive),  # Fails here
+    lambda v: Success(v / 2.0)  # Skipped!
 )
 # Result: Failure("Must be positive, got -5")
 ```
 
-Compare to exception-based code:
+### Converting Exceptions to Results
+
+Create a decorator to automatically convert exceptions into Failure:
 
 ```python
-# Exception version - much more verbose and error-prone
-try:
-    value = int("42")
-    if value <= 0:
-        raise ValueError(f"Must be positive, got {value}")
-    result = value / 2.0
-    print(f"Final value: {result}")
-except ValueError as e:
-    print(f"Pipeline failed: {e}")
-```
+from typing import Callable, TypeVar
+from functools import wraps
 
-### Safe Decorator: Converting Exceptions to Results
+T = TypeVar('T')
 
-The `@safe` decorator automatically converts exceptions into Failure:
-
-```python
-from returns.result import safe
+def safe(fn: Callable[..., T]) -> Callable[..., Result[T, Exception]]:
+    """Decorator that catches exceptions and returns Result."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs) -> Result[T, Exception]:
+        try:
+            return Success(fn(*args, **kwargs))
+        except Exception as e:
+            return Failure(e)
+    return wrapper
 
 @safe
 def parse_json(text: str) -> dict:
@@ -892,59 +931,92 @@ result1 = parse_json('{"name": "John"}')  # Success({"name": "John"})
 result2 = parse_json('invalid json')       # Failure(JSONDecodeError(...))
 
 # Chain with other operations
-user_name = (
-    parse_json('{"name": "John", "age": 30}')
-    .map(lambda data: data.get("name"))
-    .value_or("Unknown")
-)
-print(user_name)  # "John"
+def get_name(data: dict) -> str | None:
+    return data.get("name")
+
+user_name_result = map_result(parse_json('{"name": "John", "age": 30}'), get_name)
+
+match user_name_result:
+    case Success(name):
+        print(name)  # "John"
+    case Failure(error):
+        print(f"Error: {error}")
 ```
 
-### Maybe: Type-Safe Optional Values
+### Option: Type-Safe Optional Values
 
-The `Maybe` type is perfect for operations that might return nothing (better than `None`):
+For operations that might return nothing, use dataclasses (better than bare `None`):
 
 ```python
-from returns.maybe import Maybe, Some, Nothing
+from dataclasses import dataclass
+from typing import Generic, TypeVar
 
-def find_user_by_email(email: str) -> Maybe[dict[str, str]]:
+T = TypeVar('T')
+
+@dataclass
+class Some(Generic[T]):
+    """Represents a value that exists."""
+    value: T
+
+@dataclass
+class Nothing:
+    """Represents the absence of a value."""
+    pass
+
+Option = Some[T] | Nothing
+
+def find_user_by_email(email: str) -> Option[dict[str, str]]:
     """Returns Some(user) if found, Nothing otherwise."""
     user = database.find_one({"email": email})
-    return Some(user) if user else Nothing
+    return Some(user) if user else Nothing()
 
-def get_user_name(user: dict[str, str]) -> Maybe[str]:
+def get_user_name(user: dict[str, str]) -> Option[str]:
     """Extract name from user."""
     name = user.get("name")
-    return Some(name) if name else Nothing
+    return Some(name) if name else Nothing()
 
-# Chain Maybe operations - stops at first Nothing
-result: Maybe[str] = (
-    find_user_by_email("john@example.com")
-    .bind(get_user_name)
-)
+# Helper to chain Option operations
+def and_then_option(option: Option[T], fn: Callable[[T], Option[U]]) -> Option[U]:
+    """Apply fn if option is Some, otherwise return Nothing."""
+    match option:
+        case Some(value):
+            return fn(value)
+        case Nothing():
+            return Nothing()
 
-# Unwrap with default
-name = result.value_or("Anonymous User")
+# Chain Option operations - stops at first Nothing
+result = and_then_option(find_user_by_email("john@example.com"), get_user_name)
+
+# Extract with default
+def unwrap_or(option: Option[T], default: T) -> T:
+    """Return value if Some, otherwise return default."""
+    match option:
+        case Some(value):
+            return value
+        case Nothing():
+            return default
+
+name = unwrap_or(result, "Anonymous User")
 print(name)
 
-# Compare to traditional None-based code
-user = find_user_by_email_old("john@example.com")
-if user is not None:
-    name = user.get("name")
-    if name is not None:
-        print(name)
-    else:
-        print("Anonymous User")
-else:
-    print("Anonymous User")
+# For simple cases, T | None is often sufficient
+def find_user_simple(email: str) -> dict[str, str] | None:
+    """Returns user or None."""
+    return database.find_one({"email": email})
+
+user = find_user_simple("john@example.com")
+user_name = user.get("name") if user else "Anonymous User"
 ```
 
-### IO and IOResult: Marking Impure Operations
+### Organizing Pure and Impure Code
 
-`IO` types mark functions that have side effects (file I/O, database, network), separating pure and impure code:
+While Python doesn't have IO types built-in, you can use naming conventions and type hints to separate pure and impure code:
 
 ```python
-from returns.io import IO, IOSuccess, IOFailure, IOResult, impure_safe
+from typing import TypeAlias
+
+# Type alias to mark functions that perform IO
+IOResult: TypeAlias = Result[T, E]
 
 # Pure function - no side effects, always returns same output for same input
 def calculate_total(items: list[dict]) -> float:
@@ -952,33 +1024,34 @@ def calculate_total(items: list[dict]) -> float:
     return sum(item["price"] * item["quantity"] for item in items)
 
 # Impure function - has side effects (reads file)
-@impure_safe
-def read_config(path: str) -> IOResult[dict, Exception]:
-    """Reads file - marked as impure with IO type."""
+# Use @safe decorator and IOResult type hint to signal IO
+@safe
+def read_config(path: str) -> dict:
+    """Reads file - marked as impure with IOResult type and naming."""
     import json
     with open(path) as f:
         return json.load(f)
 
-# Type system now knows this function does IO!
+# Type annotation shows this function does IO
 config: IOResult[dict, Exception] = read_config("/etc/config.json")
 
-# IO types are explicit about side effects
-def process_order(order_data: dict) -> IOResult[str, str]:
+# Use Result for operations with side effects
+def process_order_io(order_data: dict) -> IOResult[str, str]:
     """Process order with database side effects."""
     total = calculate_total(order_data["items"])  # Pure - no IO
 
     # Impure - database operation
     try:
         order_id = database.insert_order(order_data, total)
-        return IOSuccess(f"Order {order_id} created")
+        return Success(f"Order {order_id} created")
     except Exception as e:
-        return IOFailure(str(e))
+        return Failure(str(e))
 
 # Benefits:
-# 1. Easy to identify which functions have side effects
+# 1. Naming convention makes side effects visible
 # 2. Can test pure functions without mocking
-# 3. Can defer IO operations (lazy evaluation)
-# 4. Clear separation of business logic (pure) from infrastructure (impure)
+# 3. Clear separation of business logic (pure) from infrastructure (impure)
+# 4. Type hints document which functions perform IO
 ```
 
 ### Practical Example: User Registration Pipeline
@@ -987,9 +1060,20 @@ Putting it all together:
 
 ```python
 from dataclasses import dataclass
-from returns.result import Result, Success, Failure, safe
-from returns.pipeline import flow
-from returns.pointfree import bind
+from typing import TypeVar
+
+T = TypeVar('T')
+E = TypeVar('E')
+
+@dataclass
+class Success(Generic[T]):
+    value: T
+
+@dataclass
+class Failure(Generic[E]):
+    error: E
+
+Result = Success[T] | Failure[E]
 
 @dataclass(frozen=True)
 class User:
@@ -1021,20 +1105,18 @@ def validate_age(age: int) -> Result[int, str]:
         return Failure("Invalid age")
     return Success(age)
 
-def create_user_object(
-    username: str,
-    email: str,
-    age: int,
-) -> Result[User, str]:
-    """Create validated user object."""
-    return Success(User(username=username, email=email, age=age))
+def create_user_object(username: str, email: str, age: int) -> User:
+    """Create user object."""
+    return User(username=username, email=email, age=age)
 
 # Impure function (database side effect)
-@safe
-def save_to_database(user: User) -> User:
+def save_to_database(user: User) -> Result[User, Exception]:
     """Save user to database (might raise exception)."""
-    user_id = database.insert({"username": user.username, "email": user.email, "age": user.age})
-    return user
+    try:
+        database.insert({"username": user.username, "email": user.email, "age": user.age})
+        return Success(user)
+    except Exception as e:
+        return Failure(e)
 
 # Compose the entire pipeline
 def register_user(
@@ -1043,79 +1125,83 @@ def register_user(
     age: int,
 ) -> Result[User, str | Exception]:
     """Register user with full validation and error handling."""
+    # Validate all fields
     username_result = validate_username(username)
-    email_result = validate_email(email)
-    age_result = validate_age(age)
+    match username_result:
+        case Failure(error):
+            return username_result
 
-    # Collect validation results
-    if isinstance(username_result, Failure):
-        return username_result
-    if isinstance(email_result, Failure):
-        return email_result
-    if isinstance(age_result, Failure):
-        return age_result
+    email_result = validate_email(email)
+    match email_result:
+        case Failure(error):
+            return email_result
+
+    age_result = validate_age(age)
+    match age_result:
+        case Failure(error):
+            return age_result
 
     # All validations passed - create and save user
-    return (
-        create_user_object(
-            username_result.unwrap(),
-            email_result.unwrap(),
-            age_result.unwrap(),
-        )
-        .bind(save_to_database)
-    )
+    match username_result, email_result, age_result:
+        case Success(uname), Success(em), Success(a):
+            user = create_user_object(uname, em, a)
+            return save_to_database(user)
 
-# Usage
+# Usage (Python 3.10+ pattern matching)
 result = register_user("john_doe", "john@example.com", 25)
 match result:
     case Success(user):
         print(f"User {user.username} registered successfully!")
     case Failure(error):
-        print(f"Registration failed: {error}")
+        error_msg = str(error) if isinstance(error, Exception) else error
+        print(f"Registration failed: {error_msg}")
 
-# All possible errors are handled at compile time by mypy!
+# All possible errors are handled by pattern matching and checked by mypy!
 ```
 
 ### Integration with mypy
 
-Enable the returns plugin for full type safety:
+The strict mypy configuration (already in our pyproject.toml) enables full type checking:
 
 ```toml
 # In pyproject.toml
 [tool.mypy]
 strict = true
-plugins = ["returns.contrib.mypy.returns_plugin"]
+python_version = "3.11"
 ```
 
-Benefits:
+Benefits with strict mode and Python 3.10+:
 
-- **Complete type inference** for Result, Maybe, and IO types
-- **Enforcement of error handling** - mypy errors if you don't handle failures
-- **Exhaustiveness checking** with pattern matching
-- **No runtime type errors** from unhandled Results
+- **Complete type inference** for dataclass-based Result and Option types
+- **Enforcement of error handling** - mypy warns about unhandled cases
+- **Exhaustiveness checking** with pattern matching (Python 3.10+)
+- **No external dependencies** - uses only native Python features
+- **Better IDE support** - editors understand dataclasses natively
 
-### When to Use Returns
+### When to Use Result Types
 
-**Use Returns when:**
-- ✅ Building highly reliable systems where all errors must be handled
-- ✅ Working with teams that appreciate functional programming patterns
-- ✅ Building data pipelines where operations must be chained safely
-- ✅ Need explicit error handling enforced by the type system
-- ✅ Working with financial, medical, or other critical domains
+**Use Result types (dataclasses with pattern matching) when:**
+
+- ✅ Errors are expected as part of normal operation (validation, parsing, user input)
+- ✅ You want explicit error handling enforced by the type system
+- ✅ Building APIs where failures are common and should be handled gracefully
+- ✅ Need to chain operations that can fail
 - ✅ Want to eliminate "forgot to handle error" bugs
+- ✅ Working with financial, medical, or other critical domains
+- ✅ Using Python 3.10+ (for pattern matching)
 
 **Use traditional exceptions when:**
-- ✅ Working with teams unfamiliar with functional patterns
-- ✅ Dealing with truly exceptional conditions (not normal control flow)
-- ✅ Simple scripts or one-off utilities
-- ✅ Need to interoperate with exception-based libraries
 
-**Hybrid approach** (recommended for most teams):
+- ✅ Dealing with truly exceptional conditions (out of memory, hardware failure)
+- ✅ Errors that should propagate up through many layers
+- ✅ Working with third-party libraries that use exceptions
+- ✅ Simple scripts where explicit error handling is overkill
+- ✅ Python is idiomatic with exceptions for many use cases
+
+**Hybrid approach** (recommended):
 
 ```python
-from returns.result import Result, Success, safe
-
-# Business logic: Use Result types
+# Business logic: Use Result types for expected failures
 def validate_transfer(from_account: int, to_account: int, amount: float) -> Result[None, str]:
     """Business logic with explicit error handling."""
     if amount <= 0:
@@ -1124,83 +1210,142 @@ def validate_transfer(from_account: int, to_account: int, amount: float) -> Resu
         return Failure("Cannot transfer to same account")
     return Success(None)
 
-# Infrastructure: Use @safe to convert exceptions to Results
-@safe
-def execute_transfer(from_account: int, to_account: int, amount: float) -> None:
-    """Database operation - exceptions automatically converted to Result."""
-    database.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", (amount, from_account))
-    database.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", (amount, to_account))
+# Infrastructure: Wrap exceptions in Results
+def execute_transfer(from_account: int, to_account: int, amount: float) -> Result[None, Exception]:
+    """Database operation - wrap exceptions in Result."""
+    try:
+        database.execute(
+            "UPDATE accounts SET balance = balance - ? WHERE id = ?",
+            (amount, from_account)
+        )
+        database.execute(
+            "UPDATE accounts SET balance = balance + ? WHERE id = ?",
+            (amount, to_account)
+        )
+        return Success(None)
+    except Exception as e:
+        return Failure(e)
 
 # Compose them together
-def transfer_money(from_account: int, to_account: int, amount: float) -> Result[str, str | Exception]:
+def transfer_money(
+    from_account: int,
+    to_account: int,
+    amount: float
+) -> Result[str, str | Exception]:
     """Full transfer with validation and error handling."""
-    return (
-        validate_transfer(from_account, to_account, amount)
-        .bind(lambda _: execute_transfer(from_account, to_account, amount))
-        .map(lambda _: f"Transferred ${amount} successfully")
-    )
+    validation_result = validate_transfer(from_account, to_account, amount)
+    match validation_result:
+        case Failure(error):
+            return validation_result
+        case Success(_):
+            execute_result = execute_transfer(from_account, to_account, amount)
+            match execute_result:
+                case Failure(error):
+                    return execute_result
+                case Success(_):
+                    return Success(f"Transferred ${amount} successfully")
 ```
 
-### Common Operations
+### Reusable Helper Library
+
+Create a utilities module for common operations:
 
 ```python
-from returns.result import Result, Success, Failure
+# result_utils.py
+from dataclasses import dataclass
+from typing import Callable, Generic, TypeVar
 
-# map: Transform success value (doesn't change failure)
+T = TypeVar('T')
+U = TypeVar('U')
+E = TypeVar('E')
+F = TypeVar('F')
+
+@dataclass
+class Success(Generic[T]):
+    """Successful result with a value."""
+    value: T
+
+@dataclass
+class Failure(Generic[E]):
+    """Failed result with an error."""
+    error: E
+
+Result = Success[T] | Failure[E]
+
+# Common helper functions
+def map_result(result: Result[T, E], fn: Callable[[T], U]) -> Result[U, E]:
+    """Transform success value, leave failure unchanged."""
+    match result:
+        case Success(value):
+            return Success(fn(value))
+        case Failure(error):
+            return Failure(error)
+
+def map_error(result: Result[T, E], fn: Callable[[E], F]) -> Result[T, F]:
+    """Transform error value, leave success unchanged."""
+    match result:
+        case Success(value):
+            return Success(value)
+        case Failure(error):
+            return Failure(fn(error))
+
+def and_then(result: Result[T, E], fn: Callable[[T], Result[U, E]]) -> Result[U, E]:
+    """Chain operations that return Result (flatMap)."""
+    match result:
+        case Success(value):
+            return fn(value)
+        case Failure(error):
+            return Failure(error)
+
+def unwrap_or(result: Result[T, E], default: T) -> T:
+    """Extract value or use default."""
+    match result:
+        case Success(value):
+            return value
+        case Failure(_):
+            return default
+
+def unwrap(result: Result[T, E]) -> T:
+    """Extract value or raise exception."""
+    match result:
+        case Success(value):
+            return value
+        case Failure(error):
+            raise error if isinstance(error, Exception) else ValueError(error)
+
+# Usage
+from result_utils import Result, Success, Failure, map_result, unwrap_or
+
 result: Result[int, str] = Success(5)
-doubled: Result[int, str] = result.map(lambda x: x * 2)  # Success(10)
-
-# bind: Chain operations that return Result (flatMap in other languages)
-result: Result[int, str] = Success(10)
-chained: Result[float, str] = result.bind(lambda x: divide(x, 2))  # Success(5.0)
-
-# value_or: Unwrap with default value
-result: Result[int, str] = Failure("error")
-value: int = result.value_or(0)  # 0
-
-# lash: Recover from failure (error handling)
-result: Result[int, str] = Failure("not found")
-recovered: Result[int, str] = result.lash(lambda error: Success(0))  # Success(0)
-
-# alt: Provide alternative Result on failure
-result: Result[int, str] = Failure("error")
-alternative: Result[int, str] = result.alt(Success(42))  # Success(42)
+doubled = map_result(result, lambda x: x * 2)  # Success(10)
+value = unwrap_or(doubled, 0)  # 10
 ```
 
-### Installation
+### No Installation Required
 
-```bash
-pip install returns
-```
+This pattern uses only native Python features - no dependencies needed! Simply define the dataclasses in your codebase or create a small utilities module.
 
-### Advanced Features (Beyond This Guide)
-
-The `returns` library offers much more for teams ready to go deeper:
-
-- **Future and FutureResult**: For async/await support and asynchronous error handling
-- **RequiresContext**: For typed dependency injection (alternative to global state)
-- **do-notation**: For imperative-style syntax with functional benefits
-- **Custom containers**: Write your own monadic types with full type safety
-
-See the [returns documentation](https://returns.readthedocs.io/) for these advanced patterns.
+**Requirements:**
+- Python 3.10+ (for pattern matching syntax)
+- Python 3.9+ can use this pattern but requires if/else instead of match/case
 
 ### Why This Makes Python Better
 
-Python is an excellent language, but exceptions have long been a weakness for type safety and composition. Result types bring the rigor and elegance of languages like Rust, Haskell, and Scala to Python while maintaining Pythonic readability.
+Python is an excellent language, but exceptions can be a weakness for type safety and composition. Dataclasses with pattern matching bring the rigor of languages like Rust and Haskell to Python while maintaining Pythonic readability and using only native features.
 
 The combination of:
 - **Strict mypy** → catches type errors at development time
 - **Pydantic** → validates external data at runtime
-- **Returns** → makes error handling explicit and type-safe
+- **Dataclasses + Pattern Matching** → makes error handling explicit and type-safe
 
-...creates a development experience that rivals statically-typed languages while keeping Python's expressiveness and productivity. For teams willing to embrace these patterns, Python becomes a genuinely world-class language for building reliable systems.
+...creates a development experience that rivals statically-typed languages while keeping Python's expressiveness and productivity. For teams willing to embrace these patterns, Python becomes a genuinely world-class language for building reliable systems - all without external dependencies.
 
 ### Further Reading
 
-- [Returns Documentation](https://returns.readthedocs.io/) - Full documentation with all containers
+- [Python Dataclasses](https://docs.python.org/3/library/dataclasses.html) - Official dataclasses documentation
+- [Pattern Matching](https://peps.python.org/pep-0636/) - PEP 636: Structural Pattern Matching Tutorial
 - [Railway Oriented Programming](https://fsharpforfunandprofit.com/rop/) - The conceptual foundation (F# article, concepts apply to all languages)
-- [returns GitHub](https://github.com/dry-python/returns) - Source code and examples
-- [Functional Programming in Python](https://returns.readthedocs.io/en/latest/pages/philosophy.html) - Philosophy behind the library
+- [Rust's Result Documentation](https://doc.rust-lang.org/std/result/) - The inspiration for this pattern
 
 ---
 

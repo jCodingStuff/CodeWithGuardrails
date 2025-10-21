@@ -10,7 +10,7 @@ This guide provides a comprehensive reference for setting up new TypeScript proj
 4. [ESLint](#eslint)
 5. [TypeScript Configuration](#typescript-configuration)
 6. [Zod (Runtime Validation)](#zod-runtime-validation)
-7. [ts-results (Functional Error Handling) - Optional](#ts-results-functional-error-handling---optional)
+7. [Error Handling with Discriminated Unions](#error-handling-with-discriminated-unions)
 8. [Git Hooks with Husky](#git-hooks-with-husky)
 9. [Git Attributes](#git-attributes)
 10. [Package.json Scripts](#packagejson-scripts)
@@ -998,13 +998,11 @@ function MyForm(): JSX.Element {
 
 ---
 
-## ts-results (Functional Error Handling) - Optional
+## Error Handling with Discriminated Unions
 
-The `ts-results` library brings Rust's powerful `Result` and `Option` types to TypeScript, making error handling explicit, composable, and fully type-safe. While TypeScript traditionally uses exceptions and `undefined`/`null` for error handling, `ts-results` offers Result types that make failure paths visible in function signatures and enforced by the type checker.
+TypeScript's discriminated unions provide a powerful, type-safe way to handle errors without external libraries. By making success and failure states explicit in function return types, you get compile-time enforcement of error handling with zero dependencies.
 
-> **Why ts-results?** Exceptions are invisible in function signatures and easy to forget. Result types make errors explicit, composable, and enforced by TypeScript. This leads to more robust code where error handling is verified at compile time. Inspired by Rust's approach, this brings the elegance and safety of systems programming to TypeScript.
-
-**Note**: This is an optional, advanced pattern best suited for teams that value functional programming or need extremely rigorous error handling. For traditional TypeScript codebases, idiomatic exception handling is perfectly acceptable.
+> **Why discriminated unions?** Exceptions are invisible in function signatures and easy to forget. Discriminated unions make errors explicit and enforced by TypeScript's type system. This leads to more robust code where error handling is verified at compile time, using only native TypeScript features.
 
 ### The Problem with Exceptions
 
@@ -1040,351 +1038,436 @@ const user = getUser(999); // Crashes at runtime!
 3. **Break composition**: Can't easily chain operations that might fail
 4. **Unclear control flow**: Exceptions can bubble up from anywhere
 
-### Result Types: Making Errors Explicit
+### Result Types with Discriminated Unions
+
+TypeScript's discriminated unions allow you to make errors explicit in function signatures:
 
 ```typescript
-import { Result, Ok, Err } from 'ts-results';
+// Define a Result type using discriminated unions
+type Result<T, E> =
+    | { success: true; value: T }
+    | { success: false; error: E };
 
 function divide(a: number, b: number): Result<number, string> {
-    // Returns Ok(result) or Err(error). Visible in signature!
+    // Returns success or error. Visible in signature!
     if (b === 0) {
-        return Err('Division by zero');
+        return { success: false, error: 'Division by zero' };
     }
-    return Ok(a / b);
+    return { success: true, value: a / b };
 }
 
 function getUser(userId: number): Result<User, string> {
-    // Returns Ok(user) or Err(error). Impossible to ignore!
+    // Returns success or error. Impossible to ignore!
     const user = database.get(userId);
     if (user === undefined) {
-        return Err(`User ${userId} not found`);
+        return { success: false, error: `User ${userId} not found` };
     }
-    return Ok(user);
+    return { success: true, value: user };
 }
 
 // TypeScript forces you to handle both cases
 const result = divide(10, 2);
-if (result.ok) {
-    console.log(`Result: ${result.val}`);
+if (result.success) {
+    console.log(`Result: ${result.value}`); // Type: number
 } else {
-    console.log(`Error: ${result.val}`);
+    console.log(`Error: ${result.error}`); // Type: string
 }
 
-// ❌ TypeScript error if you forget to handle Err!
-// const value: number = divide(10, 0); // Type error - Result is not number
+// ❌ TypeScript error if you forget to handle failure!
+// const value: number = divide(10, 0).value; // Type error - property doesn't exist on both branches
 ```
 
-### Type Safety with Narrowing
+### Type Narrowing with Discriminated Unions
 
-TypeScript's type narrowing makes working with Results elegant:
+TypeScript's type narrowing makes working with discriminated unions elegant:
 
 ```typescript
-import { Result, Ok, Err } from 'ts-results';
-
 function parseNumber(input: string): Result<number, string> {
     const parsed = parseInt(input);
     if (isNaN(parsed)) {
-        return Err(`Invalid number: ${input}`);
+        return { success: false, error: `Invalid number: ${input}` };
     }
-    return Ok(parsed);
+    return { success: true, value: parsed };
 }
 
 const result = parseNumber('42');
 
-// TypeScript narrows the type based on .ok property
-if (result.ok) {
-    // result.val is number here
-    const doubled = result.val * 2;
+// TypeScript narrows the type based on success property
+if (result.success) {
+    // result.value is number here
+    const doubled = result.value * 2;
     console.log(doubled); // 84
 } else {
-    // result.val is string (error) here
-    console.error(result.val);
+    // result.error is string here
+    console.error(result.error);
 }
 
-// Can also check with .err property
-if (result.err) {
-    // result.val is string (error) here
-    console.error(result.val);
+// Can also check failure first
+if (!result.success) {
+    // result.error is string here
+    console.error(result.error);
 } else {
-    // result.val is number here
-    const doubled = result.val * 2;
+    // result.value is number here
+    const doubled = result.value * 2;
 }
 ```
 
-### Railway-Oriented Programming: Chaining Operations
+### Chaining Operations with Helper Functions
 
-The real power of Result types is composing operations that might fail:
+You can compose operations that might fail by creating simple helper functions:
 
 ```typescript
-import { Result, Ok, Err } from 'ts-results';
+// Helper function to chain Result-returning operations
+function andThen<T, E, U>(
+    result: Result<T, E>,
+    fn: (value: T) => Result<U, E>,
+): Result<U, E> {
+    if (result.success) {
+        return fn(result.value);
+    }
+    return result;
+}
 
-// Each function returns Result<T, E>
+// Helper to transform success values
+function map<T, E, U>(result: Result<T, E>, fn: (value: T) => U): Result<U, E> {
+    if (result.success) {
+        return { success: true, value: fn(result.value) };
+    }
+    return result;
+}
+
+// Each function returns Result<T, string>
 function parseNumber(value: string): Result<number, string> {
     const parsed = parseInt(value);
     if (isNaN(parsed)) {
-        return Err(`Invalid number: ${value}`);
+        return { success: false, error: `Invalid number: ${value}` };
     }
-    return Ok(parsed);
+    return { success: true, value: parsed };
 }
 
 function validatePositive(value: number): Result<number, string> {
     if (value <= 0) {
-        return Err(`Must be positive, got ${value}`);
+        return { success: false, error: `Must be positive, got ${value}` };
     }
-    return Ok(value);
-}
-
-function divideByTwo(value: number): Result<number, string> {
-    return Ok(value / 2);
+    return { success: true, value };
 }
 
 // Chain all operations - stops at first failure
-const result = parseNumber('42')
-    .andThen(validatePositive)
-    .andThen(divideByTwo);
+const result = andThen(andThen(parseNumber('42'), validatePositive), (v) =>
+    map({ success: true, value: v }, (x) => x / 2),
+);
 
-if (result.ok) {
-    console.log(`Final value: ${result.val}`); // 21
+if (result.success) {
+    console.log(`Final value: ${result.value}`); // 21
 } else {
-    console.log(`Pipeline failed: ${result.val}`);
+    console.log(`Pipeline failed: ${result.error}`);
 }
 
-// If any step fails, the rest are skipped
-const errorResult = parseNumber('-5')
-    .andThen(validatePositive) // Fails here with "Must be positive, got -5"
-    .andThen(divideByTwo); // Skipped!
-
-console.log(errorResult.val); // "Must be positive, got -5"
-```
-
-Compare to exception-based code:
-
-```typescript
-// Exception version - much more verbose and error-prone
-try {
-    const value = parseInt('42');
-    if (isNaN(value)) {
-        throw new Error('Invalid number: 42');
-    }
-    if (value <= 0) {
-        throw new Error(`Must be positive, got ${value}`);
-    }
-    const result = value / 2;
-    console.log(`Final value: ${result}`);
-} catch (e) {
-    console.log(`Pipeline failed: ${e.message}`);
+// Or use a pipeline helper for better readability
+function pipeline<T, E>(...fns: Array<(v: any) => Result<any, E>>) {
+    return (initial: T): Result<any, E> => {
+        let result: Result<any, E> = { success: true, value: initial };
+        for (const fn of fns) {
+            if (!result.success) {
+                return result;
+            }
+            result = fn(result.value);
+        }
+        return result;
+    };
 }
+
+// Much cleaner!
+const processValue = pipeline<string, string>(
+    parseNumber,
+    validatePositive,
+    (v) => ({ success: true, value: v / 2 }),
+);
+
+const pipeResult = processValue('42');
+// { success: true, value: 21 }
 ```
 
-### Map and MapErr: Transforming Success and Error Values
+### Transforming Success and Error Values
 
 ```typescript
-import { Ok, Err } from 'ts-results';
+// Helper to transform error values
+function mapError<T, E, F>(result: Result<T, E>, fn: (error: E) => F): Result<T, F> {
+    if (result.success) {
+        return result;
+    }
+    return { success: false, error: fn(result.error) };
+}
 
-const goodResult = Ok(1);
-const badResult = Err(new Error('something went wrong'));
+const goodResult: Result<number, Error> = { success: true, value: 1 };
+const badResult: Result<number, Error> = {
+    success: false,
+    error: new Error('something went wrong'),
+};
 
-// map transforms the Ok value, leaves Err unchanged
-goodResult.map((num) => num * 2).unwrap(); // 2
-badResult.map((num) => num * 2).unwrap(); // throws Error("something went wrong")
+// map transforms the success value, leaves error unchanged
+const doubled = map(goodResult, (num) => num * 2);
+// { success: true, value: 2 }
 
-// mapErr transforms the Err value, leaves Ok unchanged
-goodResult.mapErr((err) => new Error('mapped')).unwrap(); // 1
-badResult.mapErr((err) => new Error('mapped')).unwrap(); // throws Error("mapped")
+// mapError transforms the error value, leaves success unchanged
+const withNewError = mapError(badResult, (err) => new Error('mapped'));
+// { success: false, error: Error('mapped') }
 
 // Chain them together
-goodResult
-    .map((num) => num * 2)
-    .mapErr((err) => new Error('this is never called'))
-    .unwrap(); // 2
-
-badResult
-    .map((num) => num * 2) // Skipped
-    .mapErr((err) => new Error('transformed error'))
-    .unwrap(); // throws Error("transformed error")
+const transformed = mapError(
+    map(goodResult, (num) => num * 2),
+    (err) => new Error('this is never called'),
+);
+// { success: true, value: 2 }
 ```
 
 ### Option: Type-Safe Optional Values
 
-The `Option` type is perfect for operations that might return nothing (better than `undefined`/`null`):
+For operations that might return nothing, use discriminated unions (better than `undefined`/`null`):
 
 ```typescript
-import { Option, Some, None } from 'ts-results';
+type Option<T> = { some: true; value: T } | { some: false };
 
 function findUserByEmail(email: string): Option<User> {
     const user = database.findOne({ email });
-    return user !== undefined ? Some(user) : None;
+    return user !== undefined ? { some: true, value: user } : { some: false };
 }
 
 function getUserName(user: User): Option<string> {
-    return user.name !== undefined ? Some(user.name) : None;
+    return user.name !== undefined
+        ? { some: true, value: user.name }
+        : { some: false };
 }
 
 // Chain Option operations - stops at first None
-const result: Option<string> = findUserByEmail('john@example.com').andThen(getUserName);
+function andThenOption<T, U>(
+    option: Option<T>,
+    fn: (value: T) => Option<U>,
+): Option<U> {
+    if (option.some) {
+        return fn(option.value);
+    }
+    return { some: false };
+}
 
-// Unwrap with default
-const name = result.unwrapOr('Anonymous User');
+const result = andThenOption(findUserByEmail('john@example.com'), getUserName);
+
+// Extract value with default
+function unwrapOr<T>(option: Option<T>, defaultValue: T): T {
+    return option.some ? option.value : defaultValue;
+}
+
+const name = unwrapOr(result, 'Anonymous User');
 console.log(name);
 
-// Type narrowing works with Option too
+// Type narrowing works with Option
 if (result.some) {
-    // result.val is string here
-    console.log(result.val);
+    // result.value is string here
+    console.log(result.value);
 } else {
     console.log('No name found');
 }
 
-// Compare to traditional null-based code
-const user = findUserByEmailOld('john@example.com');
-if (user !== undefined && user !== null) {
-    const name = user.name;
-    if (name !== undefined && name !== null) {
-        console.log(name);
-    } else {
-        console.log('Anonymous User');
-    }
-} else {
-    console.log('Anonymous User');
+// For simple cases, T | undefined is often sufficient
+function findUserSimple(email: string): User | undefined {
+    return database.findOne({ email });
 }
+
+const user = findUserSimple('john@example.com');
+const userName = user?.name ?? 'Anonymous User'; // Optional chaining + nullish coalescing
 ```
 
-### Unwrap and Expect: Extracting Values
+### Extracting Values Safely
 
 ```typescript
-import { Ok, Err } from 'ts-results';
+// Helper to extract value or throw
+function unwrap<T, E>(result: Result<T, E>): T {
+    if (result.success) {
+        return result.value;
+    }
+    throw result.error;
+}
 
-const goodResult = Ok(1);
-const badResult = Err(new Error('something went wrong'));
+// Helper to extract value or use default
+function unwrapOr<T, E>(result: Result<T, E>, defaultValue: T): T {
+    return result.success ? result.value : defaultValue;
+}
+
+// Helper to extract value or throw with custom message
+function expect<T, E>(result: Result<T, E>, message: string): T {
+    if (result.success) {
+        return result.value;
+    }
+    throw new Error(`${message}: ${result.error}`);
+}
+
+const goodResult: Result<number, string> = { success: true, value: 1 };
+const badResult: Result<number, string> = { success: false, error: 'something went wrong' };
 
 // unwrap: Extract value or throw error
-goodResult.unwrap(); // 1
-badResult.unwrap(); // throws Error("something went wrong")
+unwrap(goodResult); // 1
+unwrap(badResult); // throws "something went wrong"
 
 // expect: Extract value or throw custom error message
-goodResult.expect('goodResult should be a number'); // 1
-badResult.expect('badResult should be a number');
-// throws Error("badResult should be a number - Error: something went wrong")
-
-// expectErr: Extract error or throw
-badResult.expectErr('badResult should be an error'); // Error('something went wrong')
-goodResult.expectErr('goodResult should be an error'); // throws
+expect(goodResult, 'goodResult should be a number'); // 1
+expect(badResult, 'badResult should be a number');
+// throws Error("badResult should be a number: something went wrong")
 
 // unwrapOr: Extract value or use default
-goodResult.unwrapOr(5); // 1
-badResult.unwrapOr(5); // 5
+unwrapOr(goodResult, 5); // 1
+unwrapOr(badResult, 5); // 5
 ```
 
-### Empty Results
+### Results with No Value
 
-For functions that succeed with no value:
+For functions that succeed with no value (validation, side effects):
 
 ```typescript
-import { Result, Ok, Err } from 'ts-results';
-
 function validateInput(input: string): Result<void, string> {
     if (input.length === 0) {
-        return Err('Input cannot be empty');
+        return { success: false, error: 'Input cannot be empty' };
     }
     if (input.length > 100) {
-        return Err('Input too long');
+        return { success: false, error: 'Input too long' };
     }
-    // Use Ok.EMPTY for successful void results
-    return Ok.EMPTY;
+    // Success with void value
+    return { success: true, value: undefined };
 }
 
 const result = validateInput('valid input');
-if (result.ok) {
+if (result.success) {
     console.log('Input is valid!');
 } else {
-    console.error(`Validation failed: ${result.val}`);
+    console.error(`Validation failed: ${result.error}`);
 }
 ```
 
-### Combining Results
+### Combining Multiple Results
 
-`ts-results` provides two powerful helpers for working with multiple Results:
+Helper functions for working with multiple Results:
 
-#### Result.all - All Must Succeed
+#### All - All Must Succeed
 
-Either returns all of the `Ok` values, or the first `Err` value:
+Returns all success values, or the first error:
 
 ```typescript
-import { Result, Ok, Err } from 'ts-results';
+function all<T, E>(results: Array<Result<T, E>>): Result<T[], E> {
+    const values: T[] = [];
+    for (const result of results) {
+        if (!result.success) {
+            return result;
+        }
+        values.push(result.value);
+    }
+    return { success: true, value: values };
+}
 
 type Pizza = { size: string };
 type Toppings = string[];
-type GetPizzaError = { type: 'pizza'; message: string };
-type GetToppingsError = { type: 'toppings'; message: string };
+type FetchError = { type: string; message: string };
 
-function getPizza(): Result<Pizza, GetPizzaError> {
-    return Ok({ size: 'large' });
+function getPizza(): Result<Pizza, FetchError> {
+    return { success: true, value: { size: 'large' } };
 }
 
-function getToppings(): Result<Toppings, GetToppingsError> {
-    return Ok(['cheese', 'pepperoni']);
+function getToppings(): Result<Toppings, FetchError> {
+    return { success: true, value: ['cheese', 'pepperoni'] };
 }
 
 // Combines multiple results - all must succeed
-const result = Result.all(getPizza(), getToppings());
-// Type: Result<[Pizza, Toppings], GetPizzaError | GetToppingsError>
+const results = [getPizza(), getToppings()];
+const combined = all(results);
 
-if (result.ok) {
-    const [pizza, toppings] = result.val;
+if (combined.success) {
+    const [pizza, toppings] = combined.value;
     console.log(`${pizza.size} pizza with ${toppings.join(', ')}`);
 } else {
-    // result.val is either GetPizzaError or GetToppingsError
-    console.error(result.val.message);
+    console.error(combined.error.message);
 }
 ```
 
-#### Result.any - First Success Wins
+#### First Success - First Success Wins
 
-Either returns the first `Ok` value, or all `Err` values:
+Returns the first success, or all errors:
 
 ```typescript
-import { Result, Ok, Err } from 'ts-results';
-
-type Error1 = { source: 'attempt1'; message: string };
-type Error2 = { source: 'attempt2'; message: string };
-type Error3 = { source: 'attempt3'; message: string };
-
-function attempt1(): Result<string, Error1> {
-    return Err({ source: 'attempt1', message: 'Failed to fetch from primary' });
+function firstSuccess<T, E>(results: Array<Result<T, E>>): Result<T, E[]> {
+    const errors: E[] = [];
+    for (const result of results) {
+        if (result.success) {
+            return result;
+        }
+        errors.push(result.error);
+    }
+    return { success: false, error: errors };
 }
 
-function attempt2(): Result<string, Error2> {
-    return Ok('https://backup-server.com/data');
+type FetchError = { source: string; message: string };
+
+function attempt1(): Result<string, FetchError> {
+    return { success: false, error: { source: 'attempt1', message: 'Primary failed' } };
 }
 
-function attempt3(): Result<string, Error3> {
-    return Err({ source: 'attempt3', message: 'Failed to fetch from tertiary' });
+function attempt2(): Result<string, FetchError> {
+    return { success: true, value: 'https://backup-server.com/data' };
 }
 
-// Returns first success or all errors
-const result = Result.any(attempt1(), attempt2(), attempt3());
-// Type: Result<string, Error1 | Error2 | Error3>
+function attempt3(): Result<string, FetchError> {
+    return { success: false, error: { source: 'attempt3', message: 'Tertiary failed' } };
+}
 
-if (result.ok) {
-    console.log(`Got URL: ${result.val}`); // "https://backup-server.com/data"
+// Returns first success
+const result = firstSuccess([attempt1(), attempt2(), attempt3()]);
+
+if (result.success) {
+    console.log(`Got URL: ${result.value}`);
 } else {
-    console.error(`All attempts failed: ${result.val.message}`);
+    console.error(`All attempts failed:`, result.error);
 }
 ```
 
-### Stack Traces for Debugging
+### Error Context and Stack Traces
 
-Unlike simple error values, `Err` objects capture stack traces:
+For better debugging, use Error objects instead of strings:
 
 ```typescript
-import { Err } from 'ts-results';
+type Result<T, E = Error> =
+    | { success: true; value: T }
+    | { success: false; error: E };
 
-function createError(): Err<string> {
-    return Err('Something went wrong');
+function divide(a: number, b: number): Result<number> {
+    if (b === 0) {
+        // Error objects automatically capture stack traces
+        return { success: false, error: new Error('Division by zero') };
+    }
+    return { success: true, value: a / b };
 }
 
-const error = createError();
-console.log(error.stack); // Full stack trace showing where error was created
+const result = divide(10, 0);
+if (!result.success) {
+    console.error(result.error.stack); // Full stack trace
+}
+
+// For more context, create custom error classes
+class ValidationError extends Error {
+    constructor(
+        message: string,
+        public field: string,
+    ) {
+        super(message);
+        this.name = 'ValidationError';
+    }
+}
+
+function validateAge(age: number): Result<number, ValidationError> {
+    if (age < 0) {
+        return {
+            success: false,
+            error: new ValidationError('Age cannot be negative', 'age'),
+        };
+    }
+    return { success: true, value: age };
+}
 ```
 
 ### Practical Example: User Registration Pipeline
@@ -1392,8 +1475,6 @@ console.log(error.stack); // Full stack trace showing where error was created
 Putting it all together:
 
 ```typescript
-import { Result, Ok, Err } from 'ts-results';
-
 interface User {
     username: string;
     email: string;
@@ -1403,42 +1484,45 @@ interface User {
 // Validation functions (pure, no side effects)
 function validateUsername(username: string): Result<string, string> {
     if (username.length < 3) {
-        return Err('Username must be at least 3 characters');
+        return { success: false, error: 'Username must be at least 3 characters' };
     }
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
-        return Err('Username must be alphanumeric');
+        return { success: false, error: 'Username must be alphanumeric' };
     }
-    return Ok(username);
+    return { success: true, value: username };
 }
 
 function validateEmail(email: string): Result<string, string> {
     if (!email.includes('@') || !email.split('@')[1]?.includes('.')) {
-        return Err('Invalid email format');
+        return { success: false, error: 'Invalid email format' };
     }
-    return Ok(email);
+    return { success: true, value: email };
 }
 
 function validateAge(age: number): Result<number, string> {
     if (age < 13) {
-        return Err('Must be at least 13 years old');
+        return { success: false, error: 'Must be at least 13 years old' };
     }
     if (age > 120) {
-        return Err('Invalid age');
+        return { success: false, error: 'Invalid age' };
     }
-    return Ok(age);
+    return { success: true, value: age };
 }
 
-function createUserObject(username: string, email: string, age: number): Result<User, string> {
-    return Ok({ username, email, age });
+function createUserObject(username: string, email: string, age: number): User {
+    return { username, email, age };
 }
 
 // Impure function (database side effect)
 function saveToDatabase(user: User): Result<User, Error> {
     try {
-        const userId = database.insert(user);
-        return Ok(user);
+        database.insert(user);
+        return { success: true, value: user };
     } catch (error) {
-        return Err(error instanceof Error ? error : new Error('Unknown database error'));
+        return {
+            success: false,
+            error: error instanceof Error ? error : new Error('Unknown database error'),
+        };
     }
 }
 
@@ -1450,96 +1534,97 @@ function registerUser(
 ): Result<User, string | Error> {
     // Validate all fields
     const usernameResult = validateUsername(username);
-    if (usernameResult.err) {
+    if (!usernameResult.success) {
         return usernameResult;
     }
 
     const emailResult = validateEmail(email);
-    if (emailResult.err) {
+    if (!emailResult.success) {
         return emailResult;
     }
 
     const ageResult = validateAge(age);
-    if (ageResult.err) {
+    if (!ageResult.success) {
         return ageResult;
     }
 
     // All validations passed - create and save user
-    return createUserObject(usernameResult.val, emailResult.val, ageResult.val).andThen(
-        saveToDatabase,
+    const user = createUserObject(
+        usernameResult.value,
+        emailResult.value,
+        ageResult.value,
     );
+    return saveToDatabase(user);
 }
 
 // Usage
 const result = registerUser('john_doe', 'john@example.com', 25);
-if (result.ok) {
-    console.log(`User ${result.val.username} registered successfully!`);
+if (result.success) {
+    console.log(`User ${result.value.username} registered successfully!`);
 } else {
-    console.log(`Registration failed: ${result.val}`);
+    const errorMsg = typeof result.error === 'string' ? result.error : result.error.message;
+    console.log(`Registration failed: ${errorMsg}`);
 }
 
 // All possible errors are handled at compile time by TypeScript!
 ```
 
-### Integration with TypeScript
+### Integration with TypeScript's Strict Mode
 
-Enable strict mode in `tsconfig.json` for full type narrowing benefits:
+The strict TypeScript configuration (already in our tsconfig.json) enables full type narrowing benefits:
 
 ```json
 {
     "compilerOptions": {
         "strict": true,
-        "strictNullChecks": true
+        "strictNullChecks": true,
+        "noUncheckedIndexedAccess": true
     }
 }
 ```
 
-**Note**: TypeScript's type narrowing for Result types works best with `strictNullChecks` enabled.
+Benefits with strict mode enabled:
 
-Benefits:
+- **Complete type inference** for discriminated unions
+- **Enforcement of error handling** - TypeScript errors if you don't handle all cases
+- **Exhaustiveness checking** with if/else and switch statements
+- **No runtime type errors** from unhandled branches
+- **Native language features** - no external dependencies
 
-- **Complete type inference** for Result and Option types
-- **Enforcement of error handling** - TypeScript errors if you don't handle failures
-- **Exhaustiveness checking** with if/else statements
-- **No runtime type errors** from unhandled Results
+### When to Use Result Types
 
-### When to Use ts-results
+**Use Result types (discriminated unions) when:**
 
-**Use ts-results when:**
-
-- ✅ Building highly reliable systems where all errors must be handled
-- ✅ Working with teams that appreciate functional programming patterns
-- ✅ Building data pipelines where operations must be chained safely
-- ✅ Need explicit error handling enforced by the type system
-- ✅ Working with financial, medical, or other critical domains
+- ✅ Errors are expected as part of normal operation (validation, parsing, user input)
+- ✅ You want explicit error handling enforced by the type system
+- ✅ Building APIs where failures are common and should be handled gracefully
+- ✅ Need to chain operations that can fail
 - ✅ Want to eliminate "forgot to handle error" bugs
-- ✅ Inspired by Rust's error handling model
+- ✅ Working with financial, medical, or other critical domains
 
 **Use traditional exceptions when:**
 
-- ✅ Working with teams unfamiliar with functional patterns
-- ✅ Dealing with truly exceptional conditions (not normal control flow)
-- ✅ Simple scripts or one-off utilities
-- ✅ Need to interoperate with exception-based libraries
+- ✅ Dealing with truly exceptional conditions (out of memory, hardware failure)
+- ✅ Errors that should propagate up through many layers
+- ✅ Working with third-party libraries that use exceptions
+- ✅ Simple scripts where explicit error handling is overkill
 
-**Hybrid approach** (recommended for most teams):
+**Hybrid approach** (recommended):
 
 ```typescript
-import { Result, Ok, Err } from 'ts-results';
-
-// Business logic: Use Result types
+// Business logic: Use Result types for expected failures
 function validateTransfer(
     fromAccount: number,
     toAccount: number,
     amount: number,
 ): Result<void, string> {
     if (amount <= 0) {
-        return Err('Amount must be positive');
+        return { success: false, error: 'Amount must be positive' };
     }
     if (fromAccount === toAccount) {
-        return Err('Cannot transfer to same account');
+        return { success: false, error: 'Cannot transfer to same account' };
     }
-    return Ok.EMPTY;
+    return { success: true, value: undefined };
 }
 
 // Infrastructure: Wrap exceptions in Results
@@ -1557,9 +1642,12 @@ function executeTransfer(
             amount,
             toAccount,
         ]);
-        return Ok.EMPTY;
+        return { success: true, value: undefined };
     } catch (error) {
-        return Err(error instanceof Error ? error : new Error('Unknown error'));
+        return {
+            success: false,
+            error: error instanceof Error ? error : new Error('Unknown error'),
+        };
     }
 }
 
@@ -1569,97 +1657,106 @@ function transferMoney(
     toAccount: number,
     amount: number,
 ): Result<string, string | Error> {
-    return validateTransfer(fromAccount, toAccount, amount)
-        .andThen(() => executeTransfer(fromAccount, toAccount, amount))
-        .map(() => `Transferred $${amount} successfully`);
+    const validationResult = validateTransfer(fromAccount, toAccount, amount);
+    if (!validationResult.success) {
+        return validationResult;
+    }
+
+    const executeResult = executeTransfer(fromAccount, toAccount, amount);
+    if (!executeResult.success) {
+        return executeResult;
+    }
+
+    return { success: true, value: `Transferred $${amount} successfully` };
 }
 ```
 
-### Common Operations Summary
+### Reusable Helper Library
+
+Create a small utilities module for common operations:
 
 ```typescript
-import { Result, Ok, Err, Option, Some, None } from 'ts-results';
+// result-utils.ts
+export type Result<T, E> = { success: true; value: T } | { success: false; error: E };
 
-// map: Transform success value (doesn't change error)
-const result: Result<number, string> = Ok(5);
-const doubled: Result<number, string> = result.map((x) => x * 2); // Ok(10)
+export type Option<T> = { some: true; value: T } | { some: false };
 
-// mapErr: Transform error value (doesn't change success)
-const errorResult: Result<number, string> = Err('error');
-const mapped: Result<number, Error> = errorResult.mapErr((e) => new Error(e)); // Err(Error('error'))
+// Result helpers
+export function map<T, E, U>(result: Result<T, E>, fn: (value: T) => U): Result<U, E> {
+    return result.success ? { success: true, value: fn(result.value) } : result;
+}
 
-// andThen: Chain operations that return Result (flatMap)
-const chained: Result<number, string> = Ok(10).andThen((x) =>
-    x > 5 ? Ok(x * 2) : Err('too small'),
-); // Ok(20)
+export function mapError<T, E, F>(
+    result: Result<T, E>,
+    fn: (error: E) => F,
+): Result<T, F> {
+    return result.success ? result : { success: false, error: fn(result.error) };
+}
 
-// unwrapOr: Extract value or use default
-const value: number = Err('error').unwrapOr(0); // 0
+export function andThen<T, E, U>(
+    result: Result<T, E>,
+    fn: (value: T) => Result<U, E>,
+): Result<U, E> {
+    return result.success ? fn(result.value) : result;
+}
 
-// unwrap: Extract value or throw
-const extracted: number = Ok(42).unwrap(); // 42
+export function unwrapOr<T, E>(result: Result<T, E>, defaultValue: T): T {
+    return result.success ? result.value : defaultValue;
+}
 
-// expect: Extract value or throw with custom message
-const expected: number = Ok(42).expect('should be a number'); // 42
+export function unwrap<T, E>(result: Result<T, E>): T {
+    if (result.success) {
+        return result.value;
+    }
+    throw result.error;
+}
 
-// Option operations
-const some: Option<number> = Some(5);
-const none: Option<number> = None;
+// Option helpers
+export function mapOption<T, U>(option: Option<T>, fn: (value: T) => U): Option<U> {
+    return option.some ? { some: true, value: fn(option.value) } : { some: false };
+}
 
-some.unwrapOr(0); // 5
-none.unwrapOr(0); // 0
+export function andThenOption<T, U>(
+    option: Option<T>,
+    fn: (value: T) => Option<U>,
+): Option<U> {
+    return option.some ? fn(option.value) : { some: false };
+}
+
+export function unwrapOrOption<T>(option: Option<T>, defaultValue: T): T {
+    return option.some ? option.value : defaultValue;
+}
+
+// Usage
+import { Result, map, andThen, unwrapOr } from './result-utils';
+
+const result: Result<number, string> = { success: true, value: 5 };
+const doubled = map(result, (x) => x * 2); // { success: true, value: 10 }
+const value = unwrapOr(doubled, 0); // 10
 ```
 
-### Installation
+### No Installation Required
 
-```bash
-npm install ts-results
-```
-
-or
-
-```bash
-yarn add ts-results
-```
-
-### Usage with RxJS
-
-`ts-results` provides powerful operators for RxJS streams:
-
-```typescript
-import { of } from 'rxjs';
-import { Ok, Err } from 'ts-results';
-import { resultMap, filterResultOk } from 'ts-results/rxjs-operators';
-
-const stream$ = of(Ok(5), Err('error'), Ok(10));
-
-// Transform Ok values
-stream$.pipe(resultMap((x) => x * 2)); // Ok(10), Err('error'), Ok(20)
-
-// Filter to only Ok values
-stream$.pipe(filterResultOk()); // 5, 10
-```
-
-See the [ts-results documentation](https://github.com/vultix/ts-results) for complete RxJS operator reference.
+This pattern uses only native TypeScript features - no dependencies needed! Simply define the types in your codebase or create a small utilities module.
 
 ### Why This Makes TypeScript Better
 
-TypeScript is an excellent language, but exceptions and `undefined`/`null` have long been weaknesses for type safety and composition. Result and Option types bring the rigor and elegance of languages like Rust and Haskell to TypeScript while maintaining readability.
+TypeScript is an excellent language, but exceptions and `undefined`/`null` can be weaknesses for type safety and composition. Discriminated unions bring the rigor of languages like Rust and Haskell to TypeScript while maintaining readability and using only native features.
 
 The combination of:
 
 - **Strict TypeScript** → catches type errors at compile time
 - **Zod** → validates external data at runtime
-- **ts-results** → makes error handling explicit and type-safe
+- **Discriminated Unions** → makes error handling explicit and type-safe
 
-...creates a development experience that rivals purely functional languages while keeping TypeScript's expressiveness and productivity. For teams willing to embrace these patterns, TypeScript becomes a genuinely world-class language for building reliable systems.
+...creates a development experience that rivals statically-typed functional languages while keeping TypeScript's expressiveness and productivity. For teams willing to embrace these patterns, TypeScript becomes a genuinely world-class language for building reliable systems - all without external dependencies.
 
 ### Further Reading
 
-- [ts-results GitHub Repository](https://github.com/vultix/ts-results) - Full documentation and examples
-- [Rust's Result Documentation](https://doc.rust-lang.org/std/result/) - The inspiration for ts-results
+- [TypeScript Handbook: Discriminated Unions](https://www.typescriptlang.org/docs/handbook/unions-and-intersections.html#discriminating-unions) - Official TypeScript documentation
+- [Rust's Result Documentation](https://doc.rust-lang.org/std/result/) - The inspiration for this pattern
 - [Railway Oriented Programming](https://fsharpforfunandprofit.com/rop/) - The conceptual foundation (F# article, concepts apply to all languages)
-- [Rust's Option Documentation](https://doc.rust-lang.org/std/option/) - Understanding Option types
+- [Type-Safe Error Handling in TypeScript](https://www.youtube.com/watch?v=u6uCNF0JKw0) - Video explanation
 
 ---
 
