@@ -1552,6 +1552,12 @@ The combination of:
 
 ...creates a development experience that rivals statically-typed functional languages while keeping TypeScript's expressiveness and productivity. For teams willing to embrace these patterns, TypeScript becomes a genuinely world-class language for building reliable systems.
 
+### When to Consider Effect-TS
+
+For applications with complex requirements - such as managing many dependencies, coordinating resources (database connections, file handles, etc.), or building distributed systems - you might consider [Effect-TS](https://effect.website/). Effect extends the Result pattern concept into a complete framework for building type-safe, composable applications with built-in dependency injection, resource management, and advanced error handling.
+
+Effect has a steeper learning curve and introduces functional programming concepts, but can significantly improve code organization in large, complex codebases. For most projects, the Result pattern shown above combined with TypeScript's strict mode and Zod validation provides an excellent balance of safety and simplicity.
+
 ### Further Reading
 
 - [TypeScript Handbook: Discriminated Unions](https://www.typescriptlang.org/docs/handbook/unions-and-intersections.html#discriminating-unions) - Official TypeScript documentation

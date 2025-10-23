@@ -1340,6 +1340,12 @@ The combination of:
 
 ...creates a development experience that rivals statically-typed languages while keeping Python's expressiveness and productivity. For teams willing to embrace these patterns, Python becomes a genuinely world-class language for building reliable systems - all without external dependencies.
 
+### When to Consider Returns (dry-python)
+
+For applications requiring more sophisticated functional programming patterns - such as advanced monadic composition, IO effect tracking, or extensive railway-oriented programming - you might consider [Returns (dry-python)](https://returns.readthedocs.io/). Returns provides a complete library of functional types including `Result`, `Maybe`, `IO`, and various combinators for composing operations.
+
+Returns has a steeper learning curve and introduces functional programming concepts from Haskell/Scala, but can significantly improve code organization in complex functional codebases. For most projects, the dataclasses pattern shown above combined with mypy's strict mode and Pydantic validation provides an excellent balance of safety and simplicity using only native Python features.
+
 ### Further Reading
 
 - [Python Dataclasses](https://docs.python.org/3/library/dataclasses.html) - Official dataclasses documentation
