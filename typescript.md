@@ -299,6 +299,18 @@ module.exports = [
                     allowNullableObject: false,
                 },
             ],
+
+            // Additional type safety and bug prevention
+            '@typescript-eslint/require-array-sort-compare': 'error', // Prevent numeric sort bugs
+            '@typescript-eslint/no-unnecessary-type-assertion': 'error',
+
+            // Prefer modern syntax
+            '@typescript-eslint/prefer-optional-chain': 'error',
+            '@typescript-eslint/prefer-string-starts-ends-with': 'error',
+            '@typescript-eslint/prefer-includes': 'error',
+
+            // Immutability - can be upgraded to 'error' for stricter enforcement
+            '@typescript-eslint/prefer-readonly': 'warn',
         },
     },
     prettierConfig,
